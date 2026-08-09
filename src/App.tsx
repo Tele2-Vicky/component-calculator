@@ -167,6 +167,19 @@ function isLegacyUnlockedMap(value: unknown): value is Record<string, unknown> {
   )
 }
 
+/**
+ * A pre-Netherflame `unlockedMounts` object as persisted to localStorage. Unlike
+ * the export-string form (`isLegacyUnlockedMap`, which uses 0/1), the localStorage
+ * value stores booleans — so migration off it must check for booleans, not 0/1.
+ */
+function isLegacyBooleanUnlockedMap(value: unknown): value is Record<string, boolean> {
+  if (typeof value !== 'object' || value == null) return false
+  const record = value as Record<string, unknown>
+  return ['electricScooter', 'techHoverboard', 'doomsteed'].every(
+    (key) => typeof record[key] === 'boolean',
+  )
+}
+
 function isUnlockedMap(value: unknown): value is UnlockedMap {
   if (typeof value !== 'object' || value == null) return false
   const record = value as Record<string, unknown>
@@ -237,7 +250,7 @@ function defaultUnlockedFor(key: MountKey): UnlockedMap {
  * key (used pre v4). Called once at module init; if the v4 key already exists,
  * usePersistedState will overwrite this with the saved value.
  */
-function legacySeededMountLevels(): MountLevelMap {
+export function legacySeededMountLevels(): MountLevelMap {
   const out = defaultMountLevels()
   if (typeof window === 'undefined') return out
   try {
@@ -265,13 +278,13 @@ function legacySeededMountLevels(): MountLevelMap {
  * localStorage and unlock only that one. Existing single-mount users see no
  * UI change until they explicitly unlock another.
  */
-function legacySeededUnlocked(): UnlockedMap {
+export function legacySeededUnlocked(): UnlockedMap {
   if (typeof window === 'undefined') return defaultUnlockedFor(DEFAULT_MOUNT_KEY)
   try {
     const saved = window.localStorage.getItem(UNLOCKED_MOUNTS_KEY)
     if (saved != null) {
       const parsedSaved = JSON.parse(saved)
-      if (isLegacyUnlockedMap(parsedSaved)) {
+      if (isLegacyBooleanUnlockedMap(parsedSaved)) {
         const migrated = {
           ...defaultUnlockedFor(DEFAULT_MOUNT_KEY),
           ...(parsedSaved as object),

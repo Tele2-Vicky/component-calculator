@@ -2,6 +2,7 @@ import type { LineBonusTier, MountLevel } from './lineBonuses'
 import electricScooterIcon from '../assets/icons/mounts/electric_scooter.webp'
 import techHoverboardIcon from '../assets/icons/mounts/tech_hoverboard.webp'
 import doomsteedIcon from '../assets/icons/mounts/doomsteed.webp'
+import netherflameStalkerIcon from '../assets/icons/mounts/netherflame_stalker.webp'
 
 export type MountKey =
   | 'electricScooter'
@@ -131,7 +132,7 @@ export const MOUNTS: Record<MountKey, MountSpec> = {
   netherflameStalker: {
     key: 'netherflameStalker',
     name: 'Netherflame Stalker',
-    iconUrl: undefined,
+    iconUrl: netherflameStalkerIcon,
     bgColor: '#FE4C6A',
     cols: 12,
     lineBonusTiers: NETHERFLAME_STALKER_TIERS,
