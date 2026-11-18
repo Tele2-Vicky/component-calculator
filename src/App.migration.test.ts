@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { legacySeededUnlocked, legacySeededMountLevels } from './App'
+import { legacySeededUnlocked, legacySeededMountLevels } from './utils/config'
 
 const UNLOCKED_MOUNTS_KEY = 'mount-opt:unlocked-mounts:v1'
 const MOUNT_LEVELS_KEY = 'mount-opt:mount-levels:v1'
 
-describe('legacy localStorage migration to Netherflame Stalker', () => {
+describe('legacy localStorage migration to new mounts', () => {
   beforeEach(() => {
     window.localStorage.clear()
   })
@@ -26,13 +26,13 @@ describe('legacy localStorage migration to Netherflame Stalker', () => {
       techHoverboard: true,
       doomsteed: false,
       netherflameStalker: false,
+      ruinWarskitter: false,
     })
-    // The migrated 4-key map is written back so usePersistedState reads a value
-    // that passes the now-4-key validator instead of falling back to the seed.
+    // The expanded map must be written back for usePersistedState's validator.
     expect(JSON.parse(window.localStorage.getItem(UNLOCKED_MOUNTS_KEY)!)).toEqual(result)
   })
 
-  it('is idempotent once the unlocked map already contains the new mount', () => {
+  it('preserves pre-Ruin unlocks and defaults Ruin to locked', () => {
     const alreadyMigrated = {
       electricScooter: true,
       techHoverboard: false,
@@ -40,7 +40,7 @@ describe('legacy localStorage migration to Netherflame Stalker', () => {
       netherflameStalker: true,
     }
     window.localStorage.setItem(UNLOCKED_MOUNTS_KEY, JSON.stringify(alreadyMigrated))
-    expect(legacySeededUnlocked()).toEqual(alreadyMigrated)
+    expect(legacySeededUnlocked()).toEqual({ ...alreadyMigrated, ruinWarskitter: false })
   })
 
   it('migrates a pre-Netherflame mount-levels map, preserving levels and defaulting the new mount to 0', () => {
@@ -56,7 +56,27 @@ describe('legacy localStorage migration to Netherflame Stalker', () => {
       techHoverboard: 0,
       doomsteed: 8,
       netherflameStalker: 0,
+      ruinWarskitter: 0,
     })
     expect(JSON.parse(window.localStorage.getItem(MOUNT_LEVELS_KEY)!)).toEqual(result)
+  })
+
+  it('preserves all four existing mount levels when adding Ruin', () => {
+    const existing = { electricScooter: 5, techHoverboard: 7, doomsteed: 1, netherflameStalker: 3 }
+    window.localStorage.setItem(MOUNT_LEVELS_KEY, JSON.stringify(existing))
+    const result = legacySeededMountLevels()
+    expect(result).toEqual({ ...existing, ruinWarskitter: 0 })
+    expect(JSON.parse(window.localStorage.getItem(MOUNT_LEVELS_KEY)!)).toEqual(result)
+  })
+
+  it('keeps current five-mount saves intact on repeated reads', () => {
+    const unlocked = { electricScooter: true, techHoverboard: true, doomsteed: true, netherflameStalker: true, ruinWarskitter: true }
+    const levels = { electricScooter: 5, techHoverboard: 7, doomsteed: 1, netherflameStalker: 3, ruinWarskitter: 4 }
+    window.localStorage.setItem(UNLOCKED_MOUNTS_KEY, JSON.stringify(unlocked))
+    window.localStorage.setItem(MOUNT_LEVELS_KEY, JSON.stringify(levels))
+    expect(legacySeededUnlocked()).toEqual(unlocked)
+    expect(legacySeededUnlocked()).toEqual(unlocked)
+    expect(legacySeededMountLevels()).toEqual(levels)
+    expect(legacySeededMountLevels()).toEqual(levels)
   })
 })

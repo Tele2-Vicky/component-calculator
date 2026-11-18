@@ -125,6 +125,11 @@ export function MountBoardPreview({
       >
         {label}
       </span>
+      <span className="text-[10px] text-gray-400">
+        {placements.length === 0
+          ? 'Empty board'
+          : `${placements.length} piece${placements.length === 1 ? '' : 's'}`}
+      </span>
     </button>
   )
 }

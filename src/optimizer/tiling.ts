@@ -187,6 +187,14 @@ export interface TileOptions {
   deadline?: number
   /** Override the default per-call DFS node budget. */
   nodeBudget?: number
+  isCancelled?: () => boolean
+}
+
+export interface TileSearchResult {
+  result: TilingResult | null
+  /** True means infeasibility or the requested best line count was established. */
+  complete: boolean
+  stopReason?: 'nodeLimit' | 'timeLimit' | 'cancelled'
 }
 
 export function tileDistribution(
@@ -195,12 +203,21 @@ export function tileDistribution(
   targetLines: number = BOARD_ROWS,
   opts: TileOptions = {},
 ): TilingResult | null {
+  return searchTiling(dist, cols, targetLines, opts).result
+}
+
+export function searchTiling(
+  dist: ShapeCounts,
+  cols: number,
+  targetLines: number = BOARD_ROWS,
+  opts: TileOptions = {},
+): TileSearchResult {
   const cellsToPlace = totalShapeCells(dist)
   const totalCells = boardBits(cols)
-  if (cellsToPlace > totalCells) return null
+  if (cellsToPlace > totalCells) return { result: null, complete: true }
 
   // Provable infeasibility skip: a full board with an odd T-count can't tile.
-  if (!fullBoardTilingPossible(dist, cols)) return null
+  if (!fullBoardTilingPossible(dist, cols)) return { result: null, complete: true }
 
   const nodeBudget = opts.nodeBudget ?? TILE_NODE_BUDGET
   const deadline = opts.deadline ?? Infinity
@@ -217,6 +234,7 @@ export function tileDistribution(
   let bestLines = -1
   let stop = false
   let nodes = 0
+  let stopReason: TileSearchResult['stopReason']
 
   function record(occ: bigint): void {
     const lines = countFullRows(occ, cols)
@@ -272,16 +290,16 @@ export function tileDistribution(
   ): void {
     if (stop) return
     if (++nodes > nodeBudget) {
+      stopReason = 'nodeLimit'
       stop = true
       return
     }
-    if (
-      deadline !== Infinity &&
-      nodes % DEADLINE_CHECK_INTERVAL === 0 &&
-      performance.now() > deadline
-    ) {
-      stop = true
-      return
+    if (nodes === 1 || nodes % DEADLINE_CHECK_INTERVAL === 0) {
+      if (opts.isCancelled?.() || performance.now() >= deadline) {
+        stopReason = opts.isCancelled?.() ? 'cancelled' : 'timeLimit'
+        stop = true
+        return
+      }
     }
     if (remainingCells === 0) {
       record(occ)
@@ -355,5 +373,5 @@ export function tileDistribution(
   }
 
   dfsCover(0n, 0n, cellsToPlace, emptyCells)
-  return best
+  return { result: best, complete: stopReason == null, stopReason }
 }

@@ -11,7 +11,6 @@ import { isResultStale } from './utils/resultStale'
 import { UnusedPiecesSection } from './components/UnusedPiecesSection'
 import { PanelShell } from './components/PanelShell'
 import {
-  MAX_MOUNT_LEVEL,
   maxBonusLinesForLevel,
   type MountLevel,
 } from './data/lineBonuses'
@@ -22,670 +21,19 @@ import {
   MOUNTS,
   type MountKey,
 } from './data/mounts'
-import { QUALITIES } from './data/qualities'
-import { SHAPE_KEYS } from './data/shapes'
 import { STAT_KEYS, zeroStats } from './data/stats'
 import type { Piece, StatTotals } from './data/types'
 import { usePersistedState } from './hooks/usePersistedState'
 import { useOptimizer } from './hooks/useOptimizer'
 import type { BoardResult, MountConfig } from './optimizer/types'
 
-const STATS_KEY = 'mount-opt:current-stats:v1'
-const PIECES_KEY = 'mount-opt:pieces:v1'
-const LEGACY_MOUNT_LEVEL_KEY = 'mount-opt:mount-level:v1'
-const MOUNT_LEVELS_KEY = 'mount-opt:mount-levels:v1'
-const SELECTED_MOUNT_KEY = 'mount-opt:selected-mount:v1'
-const UNLOCKED_MOUNTS_KEY = 'mount-opt:unlocked-mounts:v1'
-const OPTIMIZE_SCOPE_KEY = 'mount-opt:optimize-scope:v1'
-const FULL_LIMIT_KEY = 'mount-opt:full-time-limit:v1'
-const PROFILES_KEY = 'mount-opt:profiles:v1'
-const EXPORT_PREFIX_V1 = 'mount-opt:v1:'
-const EXPORT_PREFIX_V2 = 'mount-opt:v2:'
-const EXPORT_PREFIX_V3 = 'mount-opt:v3:'
-const EXPORT_PREFIX_V4 = 'mount-opt:v4:'
-const EXPORT_PREFIX_V5 = 'mount-opt:v5:'
-const EXPORT_PREFIX_V6 = 'mount-opt:v6:'
-const EXPORT_PREFIX_V7 = 'mount-opt:v7:'
-
-type MountLevelMap = Record<MountKey, MountLevel>
-type UnlockedMap = Record<MountKey, boolean>
-
-interface ExportedConfig {
-  currentStats: StatTotals
-  pieces: Piece[]
-  selectedMountKey: MountKey
-  mountLevels: MountLevelMap
-  unlockedMounts: UnlockedMap
-  optimizeScope: OptimizeScope
-  fullTimeLimit: FullTimeLimit
-}
-
-type CompactScope = 'a' | 'e'
-type CompactPiece = [shape: Piece['shape'], quality: Piece['quality'], stat: Piece['stat']]
-type CompactZeroOne = 0 | 1
-type CompactUnlocked = {
-  electricScooter: CompactZeroOne
-  techHoverboard: CompactZeroOne
-  doomsteed: CompactZeroOne
-  netherflameStalker: CompactZeroOne
-}
-
-interface ExportedConfigV6 {
-  version: 6
-  s: number[]
-  p: CompactPiece[]
-  mt: MountKey
-  lv: { electricScooter: number; techHoverboard: number; doomsteed: number }
-  u: CompactUnlocked
-  os: CompactScope
-  t: [enabled: 0 | 1, seconds: number]
-}
-
-interface ExportedConfigV7 extends Omit<ExportedConfigV6, 'version' | 'lv'> {
-  version: 7
-  lv: {
-    electricScooter: number
-    techHoverboard: number
-    doomsteed: number
-    netherflameStalker: number
-  }
-}
-
-interface SavedProfile {
-  id: string
-  name: string
-  data: string
-  updatedAt: number
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  for (const b of bytes) binary += String.fromCharCode(b)
-  return btoa(binary)
-}
-
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64)
-  const out = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i)
-  return out
-}
-
-function encodeConfig(config: ExportedConfig): string {
-  const compact: ExportedConfigV7 = {
-    version: 7,
-    s: STAT_KEYS.map((key) => config.currentStats[key]),
-    p: config.pieces.map((piece) => [piece.shape, piece.quality, piece.stat]),
-    mt: config.selectedMountKey,
-    lv: {
-      electricScooter: config.mountLevels.electricScooter,
-      techHoverboard: config.mountLevels.techHoverboard,
-      doomsteed: config.mountLevels.doomsteed,
-      netherflameStalker: config.mountLevels.netherflameStalker,
-    },
-    u: {
-      electricScooter: config.unlockedMounts.electricScooter ? 1 : 0,
-      techHoverboard: config.unlockedMounts.techHoverboard ? 1 : 0,
-      doomsteed: config.unlockedMounts.doomsteed ? 1 : 0,
-      netherflameStalker: config.unlockedMounts.netherflameStalker ? 1 : 0,
-    },
-    os: config.optimizeScope === 'allUnlocked' ? 'a' : 'e',
-    t: [config.fullTimeLimit.enabled ? 1 : 0, config.fullTimeLimit.seconds],
-  }
-  const json = JSON.stringify(compact)
-  const base64 = bytesToBase64(new TextEncoder().encode(json))
-  return `${EXPORT_PREFIX_V7}${base64}`
-}
-
-function isMountLevel(value: unknown): value is MountLevel {
-  return (
-    typeof value === 'number' &&
-    Number.isInteger(value) &&
-    value >= 0 &&
-    value <= MAX_MOUNT_LEVEL
-  )
-}
-
-function isMountLevelMap(value: unknown): value is MountLevelMap {
-  if (typeof value !== 'object' || value == null) return false
-  const record = value as Record<string, unknown>
-  return MOUNT_KEYS.every((key) => isMountLevel(record[key]))
-}
-
-function isLegacyMountLevelMap(value: unknown): boolean {
-  if (typeof value !== 'object' || value == null) return false
-  const record = value as Record<string, unknown>
-  return ['electricScooter', 'techHoverboard', 'doomsteed'].every((key) =>
-    isMountLevel(record[key]),
-  )
-}
-
-function isLegacyUnlockedMap(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value == null) return false
-  const record = value as Record<string, unknown>
-  return ['electricScooter', 'techHoverboard', 'doomsteed'].every(
-    (key) => record[key] === 0 || record[key] === 1,
-  )
-}
-
-/**
- * A pre-Netherflame `unlockedMounts` object as persisted to localStorage. Unlike
- * the export-string form (`isLegacyUnlockedMap`, which uses 0/1), the localStorage
- * value stores booleans — so migration off it must check for booleans, not 0/1.
- */
-function isLegacyBooleanUnlockedMap(value: unknown): value is Record<string, boolean> {
-  if (typeof value !== 'object' || value == null) return false
-  const record = value as Record<string, unknown>
-  return ['electricScooter', 'techHoverboard', 'doomsteed'].every(
-    (key) => typeof record[key] === 'boolean',
-  )
-}
-
-function isUnlockedMap(value: unknown): value is UnlockedMap {
-  if (typeof value !== 'object' || value == null) return false
-  const record = value as Record<string, unknown>
-  return MOUNT_KEYS.every((key) => typeof record[key] === 'boolean')
-}
-
-function isOptimizeScope(value: unknown): value is OptimizeScope {
-  return value === 'allUnlocked' || value === 'equippedOnly'
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-
-function isStatTotals(value: unknown): value is StatTotals {
-  if (typeof value !== 'object' || value == null) return false
-  const record = value as Record<string, unknown>
-  return STAT_KEYS.every((key) => isFiniteNumber(record[key]))
-}
-
-function isPiece(value: unknown): value is Piece {
-  if (typeof value !== 'object' || value == null) return false
-  const record = value as Record<string, unknown>
-  return (
-    typeof record.id === 'string' &&
-    SHAPE_KEYS.includes(record.shape as (typeof SHAPE_KEYS)[number]) &&
-    QUALITIES.some((q) => q.key === record.quality) &&
-    STAT_KEYS.includes(record.stat as (typeof STAT_KEYS)[number])
-  )
-}
-
-function isFullTimeLimit(value: unknown): value is FullTimeLimit {
-  if (typeof value !== 'object' || value == null) return false
-  const record = value as Record<string, unknown>
-  return (
-    typeof record.enabled === 'boolean' &&
-    isFiniteNumber(record.seconds) &&
-    record.seconds >= 1
-  )
-}
-
-function defaultMountLevels(): MountLevelMap {
-  return {
-    electricScooter: 0,
-    techHoverboard: 0,
-    doomsteed: 0,
-    netherflameStalker: 0,
-  }
-}
-
-/**
- * Default unlocked map: only the given mount key unlocked. Used as the
- * fall-back for users with no `unlocked-mounts:v1` key yet (and for older
- * import versions) so the existing single-mount UI stays identical until
- * the user explicitly unlocks more.
- */
-function defaultUnlockedFor(key: MountKey): UnlockedMap {
-  return {
-    electricScooter: key === 'electricScooter',
-    techHoverboard: key === 'techHoverboard',
-    doomsteed: key === 'doomsteed',
-    netherflameStalker: key === 'netherflameStalker',
-  }
-}
-
-/**
- * Seed the per-mount levels from the legacy single-mount-level localStorage
- * key (used pre v4). Called once at module init; if the v4 key already exists,
- * usePersistedState will overwrite this with the saved value.
- */
-export function legacySeededMountLevels(): MountLevelMap {
-  const out = defaultMountLevels()
-  if (typeof window === 'undefined') return out
-  try {
-    const saved = window.localStorage.getItem(MOUNT_LEVELS_KEY)
-    if (saved != null) {
-      const parsedSaved = JSON.parse(saved)
-      if (isLegacyMountLevelMap(parsedSaved)) {
-        const migrated = { ...out, ...(parsedSaved as object) } as MountLevelMap
-        window.localStorage.setItem(MOUNT_LEVELS_KEY, JSON.stringify(migrated))
-        return migrated
-      }
-    }
-    const raw = window.localStorage.getItem(LEGACY_MOUNT_LEVEL_KEY)
-    if (raw == null) return out
-    const parsed = JSON.parse(raw)
-    if (isMountLevel(parsed)) out.electricScooter = parsed
-  } catch {
-    // ignore
-  }
-  return out
-}
-
-/**
- * Default unlocked-mounts map: read the previously-selected mount key from
- * localStorage and unlock only that one. Existing single-mount users see no
- * UI change until they explicitly unlock another.
- */
-export function legacySeededUnlocked(): UnlockedMap {
-  if (typeof window === 'undefined') return defaultUnlockedFor(DEFAULT_MOUNT_KEY)
-  try {
-    const saved = window.localStorage.getItem(UNLOCKED_MOUNTS_KEY)
-    if (saved != null) {
-      const parsedSaved = JSON.parse(saved)
-      if (isLegacyBooleanUnlockedMap(parsedSaved)) {
-        const migrated = {
-          ...defaultUnlockedFor(DEFAULT_MOUNT_KEY),
-          ...(parsedSaved as object),
-        } as UnlockedMap
-        window.localStorage.setItem(UNLOCKED_MOUNTS_KEY, JSON.stringify(migrated))
-        return migrated
-      }
-    }
-    const raw = window.localStorage.getItem(SELECTED_MOUNT_KEY)
-    if (raw == null) return defaultUnlockedFor(DEFAULT_MOUNT_KEY)
-    const parsed = JSON.parse(raw)
-    if (isMountKey(parsed)) return defaultUnlockedFor(parsed)
-  } catch {
-    // ignore
-  }
-  return defaultUnlockedFor(DEFAULT_MOUNT_KEY)
-}
-
-function decodeCompactPayload(
-  parsed: Record<string, unknown>,
-  expectedVersion: 2 | 3,
-): ExportedConfig {
-  const validShape =
-    parsed.version === expectedVersion &&
-    Array.isArray(parsed.s) &&
-    parsed.s.length === STAT_KEYS.length &&
-    parsed.s.every((value) => isFiniteNumber(value)) &&
-    Array.isArray(parsed.p) &&
-    parsed.p.every((piece) => {
-      if (!Array.isArray(piece) || piece.length !== 3) return false
-      const [shape, quality, stat] = piece
-      return (
-        SHAPE_KEYS.includes(shape as (typeof SHAPE_KEYS)[number]) &&
-        QUALITIES.some((q) => q.key === quality) &&
-        STAT_KEYS.includes(stat as (typeof STAT_KEYS)[number])
-      )
-    }) &&
-    (parsed.m === 'n' || parsed.m === 'f') &&
-    Array.isArray(parsed.t) &&
-    parsed.t.length === 2 &&
-    (parsed.t[0] === 0 || parsed.t[0] === 1) &&
-    isFiniteNumber(parsed.t[1]) &&
-    parsed.t[1] >= 1
-
-  if (!validShape) throw new Error('Import string data is invalid.')
-
-  let legacyMountLevel: MountLevel = 0
-  if (expectedVersion === 3) {
-    if (!isMountLevel(parsed.l)) {
-      throw new Error('Import string data is invalid.')
-    }
-    legacyMountLevel = parsed.l
-  }
-
-  const statValues = parsed.s as number[]
-  const compactPieces = parsed.p as CompactPiece[]
-  const [enabledFlag, seconds] = parsed.t as [0 | 1, number]
-
-  const currentStats = STAT_KEYS.reduce<StatTotals>((acc, key, index) => {
-    acc[key] = statValues[index]
-    return acc
-  }, zeroStats())
-
-  const pieces: Piece[] = compactPieces.map(([shape, quality, stat]) => ({
-    id: crypto.randomUUID(),
-    shape,
-    quality,
-    stat,
-  }))
-
-  return {
-    currentStats,
-    pieces,
-    selectedMountKey: DEFAULT_MOUNT_KEY,
-    mountLevels: { ...defaultMountLevels(), electricScooter: legacyMountLevel },
-    unlockedMounts: defaultUnlockedFor(DEFAULT_MOUNT_KEY),
-    optimizeScope: 'allUnlocked',
-    fullTimeLimit: {
-      enabled: enabledFlag === 1,
-      seconds,
-    },
-  }
-}
-
-function decodeV4Payload(parsed: Record<string, unknown>): ExportedConfig {
-  const validBaseShape =
-    parsed.version === 4 &&
-    Array.isArray(parsed.s) &&
-    parsed.s.length === STAT_KEYS.length &&
-    parsed.s.every((value) => isFiniteNumber(value)) &&
-    Array.isArray(parsed.p) &&
-    parsed.p.every((piece) => {
-      if (!Array.isArray(piece) || piece.length !== 3) return false
-      const [shape, quality, stat] = piece
-      return (
-        SHAPE_KEYS.includes(shape as (typeof SHAPE_KEYS)[number]) &&
-        QUALITIES.some((q) => q.key === quality) &&
-        STAT_KEYS.includes(stat as (typeof STAT_KEYS)[number])
-      )
-    }) &&
-    (parsed.m === 'n' || parsed.m === 'f') &&
-    isMountKey(parsed.mt) &&
-    isLegacyMountLevelMap(parsed.lv) &&
-    Array.isArray(parsed.t) &&
-    parsed.t.length === 2 &&
-    (parsed.t[0] === 0 || parsed.t[0] === 1) &&
-    isFiniteNumber(parsed.t[1]) &&
-    parsed.t[1] >= 1
-
-  if (!validBaseShape) throw new Error('Import string data is invalid.')
-
-  const statValues = parsed.s as number[]
-  const compactPieces = parsed.p as CompactPiece[]
-  const [enabledFlag, seconds] = parsed.t as [0 | 1, number]
-
-  const currentStats = STAT_KEYS.reduce<StatTotals>((acc, key, index) => {
-    acc[key] = statValues[index]
-    return acc
-  }, zeroStats())
-
-  const pieces: Piece[] = compactPieces.map(([shape, quality, stat]) => ({
-    id: crypto.randomUUID(),
-    shape,
-    quality,
-    stat,
-  }))
-
-  const selectedMountKey = parsed.mt as MountKey
-
-  return {
-    currentStats,
-    pieces,
-    selectedMountKey,
-    mountLevels: { ...defaultMountLevels(), ...(parsed.lv as object) } as MountLevelMap,
-    unlockedMounts: defaultUnlockedFor(selectedMountKey),
-    optimizeScope: 'allUnlocked',
-    fullTimeLimit: { enabled: enabledFlag === 1, seconds },
-  }
-}
-
-function decodeV5Payload(parsed: Record<string, unknown>): ExportedConfig {
-  const u = parsed.u as Record<string, unknown> | undefined
-  const validBaseShape =
-    parsed.version === 5 &&
-    Array.isArray(parsed.s) &&
-    parsed.s.length === STAT_KEYS.length &&
-    parsed.s.every((value) => isFiniteNumber(value)) &&
-    Array.isArray(parsed.p) &&
-    parsed.p.every((piece) => {
-      if (!Array.isArray(piece) || piece.length !== 3) return false
-      const [shape, quality, stat] = piece
-      return (
-        SHAPE_KEYS.includes(shape as (typeof SHAPE_KEYS)[number]) &&
-        QUALITIES.some((q) => q.key === quality) &&
-        STAT_KEYS.includes(stat as (typeof STAT_KEYS)[number])
-      )
-    }) &&
-    (parsed.m === 'n' || parsed.m === 'f') &&
-    isMountKey(parsed.mt) &&
-    isMountLevelMap(parsed.lv) &&
-    isLegacyUnlockedMap(u) &&
-    (parsed.os === 'a' || parsed.os === 'e') &&
-    Array.isArray(parsed.t) &&
-    parsed.t.length === 2 &&
-    (parsed.t[0] === 0 || parsed.t[0] === 1) &&
-    isFiniteNumber(parsed.t[1]) &&
-    parsed.t[1] >= 1
-
-  if (!validBaseShape) throw new Error('Import string data is invalid.')
-
-  const statValues = parsed.s as number[]
-  const compactPieces = parsed.p as CompactPiece[]
-  const [enabledFlag, seconds] = parsed.t as [0 | 1, number]
-
-  const currentStats = STAT_KEYS.reduce<StatTotals>((acc, key, index) => {
-    acc[key] = statValues[index]
-    return acc
-  }, zeroStats())
-
-  const pieces: Piece[] = compactPieces.map(([shape, quality, stat]) => ({
-    id: crypto.randomUUID(),
-    shape,
-    quality,
-    stat,
-  }))
-
-  const selectedMountKey = parsed.mt as MountKey
-  const unlockedMounts: UnlockedMap = {
-    electricScooter: u!.electricScooter === 1,
-    techHoverboard: u!.techHoverboard === 1,
-    doomsteed: u!.doomsteed === 1,
-    netherflameStalker: false,
-  }
-  // Force-unlock the equipped mount: a hand-edited import string could be
-  // inconsistent, but the equipped mount must always be unlocked.
-  unlockedMounts[selectedMountKey] = true
-
-  return {
-    currentStats,
-    pieces,
-    selectedMountKey,
-    mountLevels: { ...defaultMountLevels(), ...(parsed.lv as object) } as MountLevelMap,
-    unlockedMounts,
-    optimizeScope: parsed.os === 'a' ? 'allUnlocked' : 'equippedOnly',
-    fullTimeLimit: { enabled: enabledFlag === 1, seconds },
-  }
-}
-
-function decodeV6Payload(parsed: Record<string, unknown>): ExportedConfig {
-  const u = parsed.u as Record<string, unknown> | undefined
-  const validShape =
-    parsed.version === 6 &&
-    Array.isArray(parsed.s) &&
-    parsed.s.length === STAT_KEYS.length &&
-    parsed.s.every((value) => isFiniteNumber(value)) &&
-    Array.isArray(parsed.p) &&
-    parsed.p.every((piece) => {
-      if (!Array.isArray(piece) || piece.length !== 3) return false
-      const [shape, quality, stat] = piece
-      return (
-        SHAPE_KEYS.includes(shape as (typeof SHAPE_KEYS)[number]) &&
-        QUALITIES.some((q) => q.key === quality) &&
-        STAT_KEYS.includes(stat as (typeof STAT_KEYS)[number])
-      )
-    }) &&
-    isMountKey(parsed.mt) &&
-    isLegacyMountLevelMap(parsed.lv) &&
-    isLegacyUnlockedMap(u) &&
-    (parsed.os === 'a' || parsed.os === 'e') &&
-    Array.isArray(parsed.t) &&
-    parsed.t.length === 2 &&
-    (parsed.t[0] === 0 || parsed.t[0] === 1) &&
-    isFiniteNumber(parsed.t[1]) &&
-    parsed.t[1] >= 1
-
-  if (!validShape) throw new Error('Import string data is invalid.')
-
-  const statValues = parsed.s as number[]
-  const compactPieces = parsed.p as CompactPiece[]
-  const [enabledFlag, seconds] = parsed.t as [0 | 1, number]
-
-  const currentStats = STAT_KEYS.reduce<StatTotals>((acc, key, index) => {
-    acc[key] = statValues[index]
-    return acc
-  }, zeroStats())
-
-  const pieces: Piece[] = compactPieces.map(([shape, quality, stat]) => ({
-    id: crypto.randomUUID(),
-    shape,
-    quality,
-    stat,
-  }))
-
-  const selectedMountKey = parsed.mt as MountKey
-  const unlockedMounts: UnlockedMap = {
-    electricScooter: u!.electricScooter === 1,
-    techHoverboard: u!.techHoverboard === 1,
-    doomsteed: u!.doomsteed === 1,
-    netherflameStalker: false,
-  }
-  unlockedMounts[selectedMountKey] = true
-
-  return {
-    currentStats,
-    pieces,
-    selectedMountKey,
-    mountLevels: { ...defaultMountLevels(), ...(parsed.lv as object) } as MountLevelMap,
-    unlockedMounts,
-    optimizeScope: parsed.os === 'a' ? 'allUnlocked' : 'equippedOnly',
-    fullTimeLimit: { enabled: enabledFlag === 1, seconds },
-  }
-}
-
-function decodeV7Payload(parsed: Record<string, unknown>): ExportedConfig {
-  const u = parsed.u as Record<string, unknown> | undefined
-  const validShape =
-    parsed.version === 7 &&
-    Array.isArray(parsed.s) &&
-    parsed.s.length === STAT_KEYS.length &&
-    parsed.s.every((value) => isFiniteNumber(value)) &&
-    Array.isArray(parsed.p) &&
-    parsed.p.every((piece) => {
-      if (!Array.isArray(piece) || piece.length !== 3) return false
-      const [shape, quality, stat] = piece
-      return (
-        SHAPE_KEYS.includes(shape as (typeof SHAPE_KEYS)[number]) &&
-        QUALITIES.some((q) => q.key === quality) &&
-        STAT_KEYS.includes(stat as (typeof STAT_KEYS)[number])
-      )
-    }) &&
-    isMountKey(parsed.mt) &&
-    isMountLevelMap(parsed.lv) &&
-    u != null &&
-    MOUNT_KEYS.every((key) => u[key] === 0 || u[key] === 1) &&
-    (parsed.os === 'a' || parsed.os === 'e') &&
-    Array.isArray(parsed.t) &&
-    parsed.t.length === 2 &&
-    (parsed.t[0] === 0 || parsed.t[0] === 1) &&
-    isFiniteNumber(parsed.t[1]) &&
-    parsed.t[1] >= 1
-
-  if (!validShape) throw new Error('Import string data is invalid.')
-
-  const statValues = parsed.s as number[]
-  const currentStats = STAT_KEYS.reduce<StatTotals>((acc, key, index) => {
-    acc[key] = statValues[index]
-    return acc
-  }, zeroStats())
-  const pieces = (parsed.p as CompactPiece[]).map(([shape, quality, stat]) => ({
-    id: crypto.randomUUID(),
-    shape,
-    quality,
-    stat,
-  }))
-  const selectedMountKey = parsed.mt as MountKey
-  const unlockedMounts = {} as UnlockedMap
-  for (const key of MOUNT_KEYS) unlockedMounts[key] = u![key] === 1
-  unlockedMounts[selectedMountKey] = true
-  const [enabledFlag, seconds] = parsed.t as [0 | 1, number]
-  return {
-    currentStats,
-    pieces,
-    selectedMountKey,
-    mountLevels: { ...defaultMountLevels(), ...(parsed.lv as object) } as MountLevelMap,
-    unlockedMounts,
-    optimizeScope: parsed.os === 'a' ? 'allUnlocked' : 'equippedOnly',
-    fullTimeLimit: { enabled: enabledFlag === 1, seconds },
-  }
-}
-
-function decodeConfig(raw: string): ExportedConfig {
-  if (raw.startsWith(EXPORT_PREFIX_V7)) {
-    const payload = raw.slice(EXPORT_PREFIX_V7.length).trim()
-    const json = new TextDecoder().decode(base64ToBytes(payload))
-    return decodeV7Payload(JSON.parse(json) as Record<string, unknown>)
-  }
-  if (raw.startsWith(EXPORT_PREFIX_V6)) {
-    const payload = raw.slice(EXPORT_PREFIX_V6.length).trim()
-    const json = new TextDecoder().decode(base64ToBytes(payload))
-    const parsed = JSON.parse(json) as Record<string, unknown>
-    return decodeV6Payload(parsed)
-  }
-
-  if (raw.startsWith(EXPORT_PREFIX_V5)) {
-    const payload = raw.slice(EXPORT_PREFIX_V5.length).trim()
-    const json = new TextDecoder().decode(base64ToBytes(payload))
-    const parsed = JSON.parse(json) as Record<string, unknown>
-    return decodeV5Payload(parsed)
-  }
-
-  if (raw.startsWith(EXPORT_PREFIX_V4)) {
-    const payload = raw.slice(EXPORT_PREFIX_V4.length).trim()
-    const json = new TextDecoder().decode(base64ToBytes(payload))
-    const parsed = JSON.parse(json) as Record<string, unknown>
-    return decodeV4Payload(parsed)
-  }
-
-  if (raw.startsWith(EXPORT_PREFIX_V3)) {
-    const payload = raw.slice(EXPORT_PREFIX_V3.length).trim()
-    const json = new TextDecoder().decode(base64ToBytes(payload))
-    const parsed = JSON.parse(json) as Record<string, unknown>
-    return decodeCompactPayload(parsed, 3)
-  }
-
-  if (raw.startsWith(EXPORT_PREFIX_V2)) {
-    const payload = raw.slice(EXPORT_PREFIX_V2.length).trim()
-    const json = new TextDecoder().decode(base64ToBytes(payload))
-    const parsed = JSON.parse(json) as Record<string, unknown>
-    return decodeCompactPayload(parsed, 2)
-  }
-
-  if (raw.startsWith(EXPORT_PREFIX_V1)) {
-    const payload = raw.slice(EXPORT_PREFIX_V1.length).trim()
-    const json = new TextDecoder().decode(base64ToBytes(payload))
-    const parsed = JSON.parse(json) as Record<string, unknown>
-
-    if (
-      parsed.version !== 1 ||
-      !isStatTotals(parsed.currentStats) ||
-      !Array.isArray(parsed.pieces) ||
-      !parsed.pieces.every((piece) => isPiece(piece)) ||
-      (parsed.mode !== 'normal' && parsed.mode !== 'full') ||
-      !isFullTimeLimit(parsed.fullTimeLimit)
-    ) {
-      throw new Error('Import string data is invalid.')
-    }
-
-    return {
-      currentStats: parsed.currentStats,
-      pieces: parsed.pieces,
-      selectedMountKey: DEFAULT_MOUNT_KEY,
-      mountLevels: defaultMountLevels(),
-      unlockedMounts: defaultUnlockedFor(DEFAULT_MOUNT_KEY),
-      optimizeScope: 'allUnlocked',
-      fullTimeLimit: parsed.fullTimeLimit,
-    }
-  }
-
-  throw new Error('Unrecognized import string format.')
-}
+import {
+  STATS_KEY, PIECES_KEY, MOUNT_LEVELS_KEY, SELECTED_MOUNT_KEY,
+  UNLOCKED_MOUNTS_KEY, OPTIMIZE_SCOPE_KEY, FULL_LIMIT_KEY, PROFILES_KEY,
+  encodeConfig, decodeConfig, legacySeededMountLevels, legacySeededUnlocked,
+  isMountLevelMap, isUnlockedMap, isOptimizeScope,
+  type MountLevelMap, type UnlockedMap, type SavedProfile, type ExportedConfig,
+} from './utils/config'
 
 /**
  * Aggregate the per-mount piece-buff contributions in result.boards into a
@@ -749,6 +97,7 @@ export default function App() {
   )
 
   const { status, run, cancel } = useOptimizer()
+  const [runPieces, setRunPieces] = useState<Piece[] | null>(null)
   const [isProfilesOpen, setIsProfilesOpen] = useState(false)
   const [isSaveProfileOpen, setIsSaveProfileOpen] = useState(false)
   const [profileName, setProfileName] = useState('')
@@ -769,6 +118,16 @@ export default function App() {
   const [activeStatsTab, setActiveStatsTab] = useState<string>('all')
 
   const result = status.result ?? status.progress?.partial ?? null
+  const resultPieces = runPieces ?? pieces
+  const pendingEquippedMount = result && MOUNTS[result.equippedMountKey].lineBonusesPending
+    ? MOUNTS[result.equippedMountKey]
+    : null
+  const equippedResultBoard = result?.boards.find((board) => board.isEquipped)
+  const lineBonusNotes = equippedResultBoard
+    ? (MOUNTS[equippedResultBoard.mountKey].lineBonusNotes ?? []).filter((note) =>
+        equippedResultBoard.linesFilled >= note.minLines && equippedResultBoard.mountLevel >= note.unlockedAtLevel,
+      )
+    : []
 
   // When a fresh result lands, default the displayed board and stats tab.
   useEffect(() => {
@@ -831,9 +190,11 @@ export default function App() {
       }
     }
 
+    const inventorySnapshot = pieces.map((piece) => ({ ...piece }))
+    setRunPieces(inventorySnapshot)
     run({
       currentStats,
-      pieces,
+      pieces: inventorySnapshot,
       mountConfigs,
       timeBudgetMs,
     })
@@ -853,21 +214,21 @@ export default function App() {
 
   const displayedMount = displayedBoard ? MOUNTS[displayedBoard.mountKey] : null
 
-  // Pieces the optimizer left unplaced, resolved against the current inventory
-  // (pieces deleted since the run simply drop out, matching the frozen result).
+  // Every result view uses the inventory captured at the start of its run.
+  // Later edits must not mix new pieces with old placements, stats or scores.
   const unusedPieces = useMemo(() => {
     if (!result) return []
-    const byId = new Map(pieces.map((p) => [p.id, p]))
+    const byId = new Map(resultPieces.map((p) => [p.id, p]))
     return result.unusedPieceIds.flatMap((id) => {
       const piece = byId.get(id)
       return piece ? [piece] : []
     })
-  }, [result, pieces])
+  }, [result, resultPieces])
 
   // Inventory edited since the run: the frozen result no longer matches it.
   const resultStale = useMemo(
-    () => (result && !status.running ? isResultStale(result, pieces) : false),
-    [result, pieces, status.running],
+    () => (result && !status.running ? isResultStale(result, pieces, runPieces ?? undefined) : false),
+    [result, pieces, runPieces, status.running],
   )
 
   // Boards the time limit was too low to find *any* layout for (cut off before
@@ -912,7 +273,8 @@ export default function App() {
         buffsFromPieces: aggregatePieceBuffs(result.boards),
         secondaryValues: equippedBoard?.buffsFromLines ?? zeroStats(),
         secondaryKind: 'lines' as const,
-        secondaryLabel: '+ Lines',
+        secondaryLabel: equippedBoard && MOUNTS[equippedBoard.mountKey].lineBonusTiers.some((tier) => tier.minLines === 0) ? '+ Mount' : '+ Lines',
+        secondaryPending: equippedBoard ? MOUNTS[equippedBoard.mountKey].lineBonusesPending === true : false,
         roundContributions: true,
       }
     }
@@ -925,7 +287,8 @@ export default function App() {
         buffsFromPieces: board.buffsFromPieces,
         secondaryValues: board.buffsFromLines,
         secondaryKind: 'lines' as const,
-        secondaryLabel: '+ Lines',
+        secondaryLabel: MOUNTS[board.mountKey].lineBonusTiers.some((tier) => tier.minLines === 0) ? '+ Mount' : '+ Lines',
+        secondaryPending: MOUNTS[board.mountKey].lineBonusesPending === true,
         roundContributions: false,
       }
     }
@@ -936,6 +299,7 @@ export default function App() {
       secondaryValues: scaledForBoard(board),
       secondaryKind: 'syncRate' as const,
       secondaryLabel: `(× ${board.syncRate}% sync rate)`,
+      secondaryPending: false,
       roundContributions: true,
     }
   }, [result, activeStatsTab])
@@ -1169,7 +533,7 @@ export default function App() {
               // "Unused" only means something once a run has finished; mid-run
               // it's just the not-yet-placed pieces, so don't surface it.
               unusedIds={
-                status.running
+                status.running || resultStale
                   ? undefined
                   : new Set(result?.unusedPieceIds ?? [])
               }
@@ -1192,6 +556,7 @@ export default function App() {
               onCancel={cancel}
               fullTimeLimit={fullTimeLimit}
               onFullTimeLimitChange={setFullTimeLimit}
+              phase={status.progress?.phase}
               multipleMountsUnlocked={unlockedCount > 1}
               scope={optimizeScope}
               onScopeChange={setOptimizeScope}
@@ -1219,10 +584,31 @@ export default function App() {
 
             {result && displayedBoard && displayedMount ? (
               <PanelShell title="Result" bodyClassName="flex flex-col gap-4">
+                {pendingEquippedMount && (
+                  <p className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-300" role="note">
+                    {pendingEquippedMount.name} line bonuses: TBA. This result includes known component and line bonuses; unknown line bonuses are excluded.
+                  </p>
+                )}
+                {lineBonusNotes.map((note) => (
+                  <p key={note.minLines} className="text-xs text-gray-300" role="note">
+                    {note.text}
+                  </p>
+                ))}
                 {status.running && (
                   <div className="text-xs text-accent italic">
                     Preliminary result (still working)…
                   </div>
+                )}
+                {!status.running && (
+                  <p className="text-xs text-gray-300" role="status">
+                    {result.stopReason === 'cancelled'
+                        ? 'Cancelled. Showing the best layout found; optimality has not been proven.'
+                        : result.stopReason === 'timeLimit'
+                          ? 'Time limit reached. Showing the best layout found; optimality has not been proven.'
+                          : result.stopReason === 'nodeLimit'
+                            ? 'Search limit reached. Showing the best layout found; optimality has not been proven.'
+                          : 'Best layout found. Global optimality has not been proven.'}
+                  </p>
                 )}
                 {resultStale && (
                   <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
@@ -1262,8 +648,7 @@ export default function App() {
                     for a more thorough search.
                   </div>
                 )}
-                {/* Stale: we can't tell which pieces were removed or from which
-                    board, so grey out everything derived from the old run. */}
+                {/* Keep the old run internally consistent and visibly stale. */}
                 <div
                   className={`flex flex-col gap-4 transition-opacity ${
                     resultStale ? 'opacity-40 grayscale' : ''
@@ -1281,7 +666,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-xs text-gray-400">Final score</div>
+                    <div className="text-xs text-gray-400">{pendingEquippedMount ? 'Score (line bonuses TBA)' : 'Best score'}</div>
                     <div className="text-2xl font-bold text-white">
                       {result.afterScore.toFixed(3)}×
                     </div>
@@ -1300,7 +685,7 @@ export default function App() {
                     )}
                   </div>
                   <BoardView
-                    pieces={pieces}
+                    pieces={resultPieces}
                     placements={displayedBoard.placements}
                     cols={displayedMount.cols}
                     maxHighlightedLines={
@@ -1324,7 +709,7 @@ export default function App() {
                       return (
                         <MountBoardPreview
                           key={board.mountKey}
-                          pieces={pieces}
+                          pieces={resultPieces}
                           placements={board.placements}
                           cols={m.cols}
                           active={board.mountKey === displayedMountKey}
@@ -1343,6 +728,7 @@ export default function App() {
                     secondaryValues={statsViewProps.secondaryValues}
                     secondaryKind={statsViewProps.secondaryKind}
                     secondaryLabel={statsViewProps.secondaryLabel}
+                    secondaryPending={statsViewProps.secondaryPending}
                     roundContributions={statsViewProps.roundContributions}
                     tabs={statsViewProps.tabs}
                     activeTabId={statsViewProps.activeTabId}
@@ -1357,7 +743,7 @@ export default function App() {
 
                 <div className="text-[11px] text-gray-500 text-right">
                   {result.elapsedMs.toFixed(0)}ms
-                  {result.truncated ? ' · timed out, best-so-far' : ''}
+                  {result.stopReason === 'timeLimit' ? ' · time limit reached' : result.stopReason === 'cancelled' ? ' · cancelled' : ''}
                 </div>
               </PanelShell>
             ) : (

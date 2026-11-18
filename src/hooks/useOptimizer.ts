@@ -3,6 +3,7 @@ import type { MountKey } from '../data/mounts'
 import type {
   OptimizerInput,
   OptimizerResult,
+  SearchPhase,
   WorkerMessage,
 } from '../optimizer/types'
 
@@ -17,6 +18,7 @@ export interface OptimizerStatus {
     fractionComplete?: number
     boardIndex?: number
     boardCount?: number
+    phase?: SearchPhase
   } | null
 }
 
@@ -47,6 +49,7 @@ export function useOptimizer() {
             fractionComplete: msg.fractionComplete,
             boardIndex: msg.boardIndex,
             boardCount: msg.boardCount,
+            phase: msg.phase,
           },
         }))
       } else if (msg.type === 'done') {

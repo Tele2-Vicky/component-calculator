@@ -19,6 +19,28 @@ function counts(parts: Partial<ShapeCounts>): ShapeCounts {
 }
 
 describe('selectPieces', () => {
+  it('selects poison when crossing a dynamic Doomsteed bonus threshold beats skill damage', () => {
+    const poison = mk('I', 'legend', 'toPoisoned')
+    const skill = mk('I', 'legend', 'skillDamage')
+    const stats = { ...zeroStats(), toPoisoned: 90 }
+    const tiers = MOUNTS.doomsteed.lineBonusTiers
+    const result = selectPieces([skill, poison], counts({ I: 1 }), 8, stats, tiers, 8, 1, {
+      seed: { picks: [skill], score: -1 },
+    })
+    expect(result.picks).toEqual([poison])
+    expect(result.score).toBeCloseTo(scoreLayout(stats, [poison], 8, tiers, 8), 10)
+    expect(result.complete).toBe(true)
+  })
+
+  it('reports an unfinished selection when its node budget is exhausted', () => {
+    const piece = mk('O', 'legend', 'critDamage')
+    const result = selectPieces([piece], counts({ O: 1 }), 0, zeroStats(), [], 0, 1, {
+      seed: { picks: [piece], score: 0 }, nodeBudget: 0,
+    })
+    expect(result.picks).toEqual([piece])
+    expect(result.score).toBeCloseTo(1.33)
+    expect(result.complete).toBe(false)
+  })
   it('returns the line-bonus-only baseline for an empty distribution', () => {
     const result = selectPieces(
       [mk('O', 'legend', 'critDamage')],
@@ -192,13 +214,13 @@ describe('selectPieces', () => {
     )
   })
 
-  describe('debuff priority (chilled > poisoned > weakened)', () => {
+  describe('elemental preference', () => {
     const pick = (inv: Piece[]) =>
       selectPieces(inv, counts({ O: 1 }), 0, zeroStats(), ES_TIERS, 0).picks.map(
         (p) => p.stat,
       )
 
-    it('prefers chilled over poisoned over weakened on equal value', () => {
+    it('uses chilled, poisoned, weakened as the fallback when starting stats tie', () => {
       const w = mk('O', 'legend', 'toWeakened')
       const p = mk('O', 'legend', 'toPoisoned')
       const c = mk('O', 'legend', 'toChilled')
@@ -221,6 +243,54 @@ describe('selectPieces', () => {
       const w = mk('O', 'legend', 'toWeakened')
       const c = mk('O', 'good', 'toChilled')
       expect(pick([c, w])).toEqual(['toWeakened'])
+    })
+
+    it.each(['toChilled', 'toPoisoned', 'toWeakened'] as const)(
+      'prefers matching-grade pieces for the highest starting element: %s',
+      (highest) => {
+        const stats = { ...zeroStats(), [highest]: 500 }
+        const inventory = [
+          mk('O', 'epic', 'toChilled'),
+          mk('O', 'epic', 'toPoisoned'),
+          mk('O', 'epic', 'toWeakened'),
+        ]
+        for (const order of [inventory, [...inventory].reverse()]) {
+          const result = selectPieces(order, counts({ O: 1 }), 0, stats, [], 0)
+          expect(result.picks.map((p) => p.stat)).toEqual([highest])
+        }
+      },
+    )
+
+    it('falls back to the next-highest available element', () => {
+      const stats = { ...zeroStats(), toWeakened: 500, toPoisoned: 200, toChilled: 100 }
+      const chilled = mk('O', 'epic', 'toChilled')
+      const poison = mk('O', 'epic', 'toPoisoned')
+      expect(selectPieces([chilled, poison], counts({ O: 1 }), 0, stats, [], 0).picks).toEqual([poison])
+    })
+
+    it('keeps a higher-grade element over a lower-grade preferred element', () => {
+      const stats = { ...zeroStats(), toPoisoned: 500 }
+      const chilled = mk('O', 'legend', 'toChilled')
+      const poison = mk('O', 'epic', 'toPoisoned')
+      expect(selectPieces([poison, chilled], counts({ O: 1 }), 0, stats, [], 0).picks).toEqual([chilled])
+    })
+
+    it('corrects an equal-score seed toward the highest starting element', () => {
+      const stats = { ...zeroStats(), toWeakened: 500 }
+      const chilled = mk('O', 'legend', 'toChilled')
+      const weakened = mk('O', 'legend', 'toWeakened')
+      const result = selectPieces([chilled, weakened], counts({ O: 1 }), 0, stats, [], 0, 1, {
+        seed: { picks: [chilled], score: scoreLayout(stats, [chilled], 0, [], 0) },
+      })
+      expect(result.picks).toEqual([weakened])
+    })
+
+    it('preserves a higher-scoring Doomsteed poison threshold over the preferred element', () => {
+      const stats = { ...zeroStats(), toChilled: 1_000, toPoisoned: 90 }
+      const chilled = mk('I', 'legend', 'toChilled')
+      const poison = mk('I', 'legend', 'toPoisoned')
+      const result = selectPieces([chilled, poison], counts({ I: 1 }), 8, stats, MOUNTS.doomsteed.lineBonusTiers, 8)
+      expect(result.picks).toEqual([poison])
     })
   })
 })

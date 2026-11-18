@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { MOUNTS, type MountKey } from '../data/mounts'
 import { PanelShell } from './PanelShell'
+import type { SearchPhase } from '../optimizer/types'
 
 export interface FullTimeLimit {
   enabled: boolean
@@ -16,6 +17,7 @@ interface Props {
   onCancel: () => void
   fullTimeLimit: FullTimeLimit
   onFullTimeLimitChange: (next: FullTimeLimit) => void
+  phase?: SearchPhase
   /**
    * When the player has 2+ unlocked mounts, the panel surfaces a scope
    * toggle. Hidden entirely when only 1 is unlocked (degenerate).
@@ -44,6 +46,7 @@ interface Props {
 
 interface BarProps {
   running: boolean
+  phase?: SearchPhase
   /** Per-board time budget in ms (when the time-limit toggle is on). */
   timeBudgetMsPerBoard?: number
   /** Layouts the current board has tiled and scored so far (no known total). */
@@ -63,6 +66,7 @@ const MAX_PARTIAL_FILL = 0.95
 
 function ProgressBar({
   running,
+  phase,
   timeBudgetMsPerBoard,
   exploredCount,
   fractionComplete,
@@ -71,47 +75,28 @@ function ProgressBar({
   currentMountKey,
   finishedMountKeys,
 }: BarProps) {
-  const [boardStartedAt, setBoardStartedAt] = useState<number | null>(null)
-  const lastBoardIndexRef = useRef<number | undefined>(undefined)
-  const [, setTick] = useState(0)
-  const intervalRef = useRef<number | null>(null)
-
-  useEffect(() => {
-    if (!running) {
-      setBoardStartedAt(null)
-      lastBoardIndexRef.current = undefined
-      return
-    }
-    if (boardIndex !== lastBoardIndexRef.current) {
-      lastBoardIndexRef.current = boardIndex
-      setBoardStartedAt(performance.now())
-    }
-  }, [running, boardIndex])
+  const [elapsedThisBoard, setElapsed] = useState(0)
 
   useEffect(() => {
     if (!running) return
-    if (boardStartedAt == null) setBoardStartedAt(performance.now())
-    intervalRef.current = window.setInterval(() => {
-      setTick((t) => t + 1)
+    const startedAt = performance.now()
+    const timer = window.setInterval(() => {
+      setElapsed(performance.now() - startedAt)
     }, 100)
     return () => {
-      if (intervalRef.current != null) {
-        window.clearInterval(intervalRef.current)
-        intervalRef.current = null
-      }
+      window.clearInterval(timer)
     }
-  }, [running, boardStartedAt])
+  }, [running])
 
   if (!running) return null
 
-  const elapsedThisBoard =
-    boardStartedAt != null ? performance.now() - boardStartedAt : 0
-  const timed = timeBudgetMsPerBoard != null && timeBudgetMsPerBoard > 0
+  const timed = timeBudgetMsPerBoard != null && timeBudgetMsPerBoard > 0 && phase !== 'refining'
   const timePct = timed
     ? Math.min(100, (elapsedThisBoard / timeBudgetMsPerBoard) * 100)
     : 0
-  const total = Math.max(1, boardCount ?? 1)
-  const current = Math.min(total, Math.max(1, boardIndex ?? 1))
+  const sharedPhase = phase === 'refining'
+  const total = sharedPhase ? 1 : Math.max(1, boardCount ?? 1)
+  const current = sharedPhase ? 1 : Math.min(total, Math.max(1, boardIndex ?? 1))
   const partial = Math.min(
     MAX_PARTIAL_FILL,
     Math.max(0, fractionComplete ?? 0),
@@ -132,6 +117,11 @@ function ProgressBar({
 
   return (
     <div className="mt-3">
+      {sharedPhase && (
+        <div className="text-xs text-gray-300 mb-1.5" role="status">
+          Improving allocations across mounts…
+        </div>
+      )}
       {total > 1 && (
         <div className="flex items-center gap-2 text-xs text-gray-300 mb-1.5">
           <span className="tabular-nums">
@@ -161,7 +151,7 @@ function ProgressBar({
               <div
                 className={`h-full bg-accent ${seg.isCurrent ? 'animate-pulse' : ''}`}
                 style={{
-                  width: `${seg.fill * 100}%`,
+                  width: sharedPhase ? '35%' : `${seg.fill * 100}%`,
                   transition: 'width 200ms linear',
                 }}
               />
@@ -187,11 +177,11 @@ function ProgressBar({
       )}
       <div className="flex justify-between text-[11px] text-gray-500 mt-1">
         <span>
-          {(elapsedThisBoard / 1000).toFixed(1)}s on this board
+          {(elapsedThisBoard / 1000).toFixed(1)}s {sharedPhase ? 'elapsed' : 'on this board'}
           {timed && ` of ${(timeBudgetMsPerBoard! / 1000).toFixed(0)}s limit`}
         </span>
         {exploredCount != null && exploredCount > 0 && (
-          <span>{exploredCount.toLocaleString()} layouts checked</span>
+          <span>{exploredCount.toLocaleString()} candidates checked</span>
         )}
       </div>
     </div>
@@ -205,6 +195,7 @@ export function OptimizerPanel({
   onCancel,
   fullTimeLimit,
   onFullTimeLimitChange,
+  phase,
   multipleMountsUnlocked,
   scope,
   onScopeChange,
@@ -323,8 +314,10 @@ export function OptimizerPanel({
         </div>
       </div>
 
-      <ProgressBar
+      {running && <ProgressBar
+        key={phase === 'refining' ? 'refining' : `board-${boardIndex ?? 1}`}
         running={running}
+        phase={phase}
         timeBudgetMsPerBoard={timeBudgetMsPerBoard}
         exploredCount={exploredCount}
         fractionComplete={fractionComplete}
@@ -332,7 +325,7 @@ export function OptimizerPanel({
         boardCount={effectiveBoardCount}
         currentMountKey={currentMountKey}
         finishedMountKeys={finishedMountKeys}
-      />
+      />}
 
       {progressLabel && (
         <div className="mt-2 text-xs text-gray-400">{progressLabel}</div>

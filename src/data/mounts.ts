@@ -3,12 +3,14 @@ import electricScooterIcon from '../assets/icons/mounts/electric_scooter.webp'
 import techHoverboardIcon from '../assets/icons/mounts/tech_hoverboard.webp'
 import doomsteedIcon from '../assets/icons/mounts/doomsteed.webp'
 import netherflameStalkerIcon from '../assets/icons/mounts/netherflame_stalker.webp'
+import ruinousWarskitterIcon from '../assets/icons/mounts/ruinous_warskitter.webp'
 
 export type MountKey =
   | 'electricScooter'
   | 'techHoverboard'
   | 'doomsteed'
   | 'netherflameStalker'
+  | 'ruinWarskitter'
 
 export interface MountSpec {
   key: MountKey
@@ -19,6 +21,14 @@ export interface MountSpec {
   /** Board column count. Rows are always 8 across all mounts. */
   cols: number
   lineBonusTiers: LineBonusTier[]
+  /** Unknown bonuses are excluded from scoring and displayed as TBA. */
+  lineBonusesPending?: boolean
+  /** Assumptions and unscored effects, shown when the equipped tier is active. */
+  lineBonusNotes?: {
+    minLines: number
+    unlockedAtLevel: MountLevel
+    text: string
+  }[]
   /**
    * Sync-rate percentages indexed by MountLevel (0..8). When this mount is
    * NOT the equipped one, pieces placed on its board only contribute
@@ -35,6 +45,7 @@ export const MOUNT_KEYS: MountKey[] = [
   'techHoverboard',
   'doomsteed',
   'netherflameStalker',
+  'ruinWarskitter',
 ]
 
 export const DEFAULT_MOUNT_KEY: MountKey = 'electricScooter'
@@ -101,6 +112,26 @@ const NETHERFLAME_STALKER_TIERS: LineBonusTier[] = [
   { minLines: 8, unlockedAtLevel: 8, bonus: { shieldDamage: 120 } },
 ]
 
+// Cross-checked against Expo's deployed calculator on 2026-11-18.
+// Source details and the base-effect distinction: docs/notes/ruinous-warskitter-exp0-audit.md.
+const RUINOUS_WARSKITTER_TIERS: LineBonusTier[] = [
+  // Base Ruinous Shot effect while equipped; assume the debuff is maintained.
+  { minLines: 0, unlockedAtLevel: 0, bonus: { vulnerability: 30 } },
+  { minLines: 1, unlockedAtLevel: 0, bonus: { shieldDamage: 10, toChilled: 40 } },
+  // Extends Vulnerability duration by 5s, with no additional magnitude under
+  // the maintained-debuff assumption.
+  { minLines: 2, unlockedAtLevel: 0, bonus: {} },
+  { minLines: 3, unlockedAtLevel: 0, bonus: { shieldDamage: 15, toBosses: 15 } },
+  // Five Enhancement stacks at +20% each, reached after 250 Ruinous Shots.
+  { minLines: 4, unlockedAtLevel: 0, bonus: { vulnerability: 100 } },
+  // At the user's requested maximum six stacks: 6 * 10% Shield Damage.
+  { minLines: 5, unlockedAtLevel: 2, bonus: { shieldDamage: 60 } },
+  { minLines: 6, unlockedAtLevel: 4, bonus: { shieldDamage: 20, toChilled: 60 } },
+  { minLines: 7, unlockedAtLevel: 6, bonus: { shieldDamage: 35, toBosses: 25 } },
+  // Adds another +20% per Enhancement stack: 5 * 20 = +100%, not +20% total.
+  { minLines: 8, unlockedAtLevel: 8, bonus: { vulnerability: 100 } },
+]
+
 export const MOUNTS: Record<MountKey, MountSpec> = {
   electricScooter: {
     key: 'electricScooter',
@@ -136,6 +167,34 @@ export const MOUNTS: Record<MountKey, MountSpec> = {
     bgColor: '#FE4C6A',
     cols: 12,
     lineBonusTiers: NETHERFLAME_STALKER_TIERS,
+    syncRates: DOOMSTEED_SYNC_RATES,
+  },
+  ruinWarskitter: {
+    key: 'ruinWarskitter',
+    name: 'Ruinous Warskitter',
+    iconUrl: ruinousWarskitterIcon,
+    bgColor: '#FE4C6A',
+    cols: 12,
+    lineBonusTiers: RUINOUS_WARSKITTER_TIERS,
+    lineBonusNotes: [
+      {
+        minLines: 0, unlockedAtLevel: 0,
+        text: 'Assumes Ruinous Shot Vulnerability is maintained during combat. Direct mount attack damage is excluded.',
+      },
+      {
+        minLines: 4, unlockedAtLevel: 0,
+        text: 'Assumes five Enhancement stacks (+100% Vulnerability), reached after 250 Ruinous Shots.',
+      },
+      {
+        minLines: 5, unlockedAtLevel: 2,
+        text: 'Assumes six stacks for the 5-line bonus (+60% Shield Damage).',
+      },
+      {
+        minLines: 8, unlockedAtLevel: 8,
+        text: 'The 8-line bonus adds another +100% Vulnerability at five Enhancement stacks (230% total from this mount).',
+      },
+    ],
+    // Matches Expo's shared legendary-mount table, including 40% at zero stars.
     syncRates: DOOMSTEED_SYNC_RATES,
   },
 }

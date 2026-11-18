@@ -52,7 +52,7 @@ describe('greedy estimator', () => {
     expect(createGreedyEstimator(inv, stats, [], 0, 1).estimate(dist, 0)).toBe(0)
   })
 
-  it('breaks equal-value ties toward chilled > poisoned > weakened', () => {
+  it('uses chilled > poisoned > weakened when starting elemental stats tie', () => {
     const mk = (id: string, stat: Piece['stat']): Piece => ({
       id,
       shape: 'O',
@@ -69,5 +69,29 @@ describe('greedy estimator', () => {
     expect(first([w, p, c])).toBe('toChilled')
     expect(first([c, p, w])).toBe('toChilled')
     expect(first([w, p])).toBe('toPoisoned')
+  })
+
+  it.each(['toChilled', 'toPoisoned', 'toWeakened'] as const)(
+    'favors matching-grade pieces for the strongest starting element: %s',
+    (highest) => {
+      const inventory: Piece[] = ['toChilled', 'toPoisoned', 'toWeakened'].map((stat) => ({
+        id: stat, shape: 'O', quality: 'epic', stat: stat as Piece['stat'],
+      }))
+      const dist = { ...emptyShapeCounts(), O: 1 }
+      for (const order of [inventory, [...inventory].reverse()]) {
+        const result = createGreedyEstimator(order, { ...zeroStats(), [highest]: 500 }, [], 0, 1).pick(dist, 0)
+        expect(result.picks.map((p) => p.stat)).toEqual([highest])
+      }
+    },
+  )
+
+  it('keeps a higher-grade element over a lower-grade preferred element', () => {
+    const inventory: Piece[] = [
+      { id: 'poison', shape: 'O', quality: 'epic', stat: 'toPoisoned' },
+      { id: 'chilled', shape: 'O', quality: 'legend', stat: 'toChilled' },
+    ]
+    const dist = { ...emptyShapeCounts(), O: 1 }
+    const result = createGreedyEstimator(inventory, { ...zeroStats(), toPoisoned: 500 }, [], 0, 1).pick(dist, 0)
+    expect(result.picks.map((p) => p.id)).toEqual(['chilled'])
   })
 })

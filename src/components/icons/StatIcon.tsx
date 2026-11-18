@@ -1,15 +1,15 @@
-import type { StatKey } from '../../data/types'
-import { STAT_META } from '../../data/stats'
+import type { ScoreStatKey } from '../../data/types'
+import { SCORE_STAT_META } from '../../data/stats'
 
 interface Props {
-  stat: StatKey
+  stat: ScoreStatKey
   size?: number
   className?: string
   title?: string
 }
 
 export function StatIcon({ stat, size = 24, className, title }: Props) {
-  const meta = STAT_META[stat]
+  const meta = SCORE_STAT_META[stat]
   return (
     <img
       src={meta.icon}

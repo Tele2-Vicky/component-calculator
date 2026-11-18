@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import type { MountKey } from '../data/mounts'
 import { solveAll } from './solveAll'
-import type { OptimizerInput, OptimizerResult, WorkerMessage } from './types'
+import type { OptimizerInput, OptimizerResult, SearchPhase, WorkerMessage } from './types'
 
 let cancelled = false
 
@@ -30,6 +30,7 @@ ctx.addEventListener(
         fractionComplete: number,
         boardIndex: number,
         boardCount: number,
+        phase?: SearchPhase,
       ) => {
         const msg: WorkerMessage = {
           type: 'progress',
@@ -39,6 +40,7 @@ ctx.addEventListener(
           fractionComplete,
           boardIndex,
           boardCount,
+          phase,
         }
         ctx.postMessage(msg)
       }

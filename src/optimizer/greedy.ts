@@ -1,7 +1,7 @@
 import { BUFF_TABLE } from '../data/buffTable'
 import type { LineBonusTier, MountLevel } from '../data/lineBonuses'
 import { SHAPE_KEYS } from '../data/shapes'
-import { debuffRank } from '../data/stats'
+import { debuffPriorityFor, debuffRank } from '../data/stats'
 import type { Piece, ShapeKey, StatKey, StatTotals } from '../data/types'
 import { applyLineBonuses, cloneStats, formula } from './scoring'
 import type { ShapeCounts } from './tiling'
@@ -21,7 +21,9 @@ import type { ShapeCounts } from './tiling'
  * higher, so callers re-run `selectPieces` on the mixes they actually keep.
  */
 
-// Factor slot for each stat: the three debuff stats share one pool factor.
+// Factor slot for component stats: the three debuffs share one pool factor.
+// Vulnerability is constant for a fixed line count and is already included
+// in base.score; there are no Vulnerability components to allocate.
 const FACTOR_OF: Record<StatKey, number> = {
   critDamage: 0,
   skillDamage: 1,
@@ -33,13 +35,6 @@ const FACTOR_OF: Record<StatKey, number> = {
   toChilled: 5,
 }
 const NUM_FACTORS = 6
-// Debuffs first in priority order (chilled > poisoned > weakened): every loop
-// below keeps the first of equal candidates, so this makes ties favor chilled.
-// Array.sort is stable, so non-debuff stats keep their relative order.
-const STAT_LIST = (Object.keys(FACTOR_OF) as StatKey[]).sort(
-  (a, b) => debuffRank(a) - debuffRank(b),
-)
-
 function factorsOf(s: StatTotals): Float64Array {
   const f = new Float64Array(NUM_FACTORS)
   f[0] = 1 + s.critDamage / 100
@@ -64,7 +59,13 @@ export function createGreedyEstimator(
   tiers: LineBonusTier[],
   mountLevel: MountLevel,
   pieceBuffMultiplier: number,
+  debuffPriority: readonly StatKey[] = debuffPriorityFor(currentStats),
 ): GreedyEstimator {
+  // Equal-grade elemental heads have identical gains. Visit the player's
+  // strongest element first, with a fixed order shared across all boards.
+  const STAT_LIST = (Object.keys(FACTOR_OF) as StatKey[]).sort(
+    (a, b) => debuffRank(a, debuffPriority) - debuffRank(b, debuffPriority),
+  )
   // queues[shapeIdx][statIdx] = buffs (percent, already scaled), best first.
   const queues: number[][][] = SHAPE_KEYS.map(() => STAT_LIST.map(() => []))
   const pieceQueues: Piece[][][] = SHAPE_KEYS.map(() => STAT_LIST.map(() => []))
@@ -115,7 +116,8 @@ export function createGreedyEstimator(
       let bTo = -1
       let bScore = score
       for (let si = 0; si < SHAPE_KEYS.length; si++) {
-        for (let from = 0; from < NS; from++) {
+        // On equal gains, discard a less-preferred element first.
+        for (let from = NS - 1; from >= 0; from--) {
           const kFrom = ptr[si * NS + from]
           if (kFrom === 0) continue
           const bFromBuff = queues[si][from][kFrom - 1]
