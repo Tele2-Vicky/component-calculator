@@ -5,8 +5,8 @@ import {
 } from '../data/lineBonuses'
 import { DEFAULT_MOUNT_KEY, MOUNTS, type MountKey } from '../data/mounts'
 import { MIN_PIECE_CELLS, SHAPE_KEYS } from '../data/shapes'
-import { zeroStats } from '../data/stats'
-import type { Piece, ShapeKey, StatTotals } from '../data/types'
+import { debuffPriorityFor, zeroStats } from '../data/stats'
+import type { Piece, ShapeKey, StatKey, StatTotals } from '../data/types'
 import { boardBits } from './board'
 import { createGreedyEstimator } from './greedy'
 import { selectPieces } from './selection'
@@ -18,14 +18,14 @@ import {
 import {
   enumerateDistributions,
   inventoryShapeCounts,
-  tileDistribution,
+  searchTiling,
   totalShapeCells,
   type ShapeCounts,
   type SlotPlacement,
   type TilingResult,
 } from './tiling'
 import { BOARD_ROWS } from './types'
-import type { BoardSolveResult, Placement } from './types'
+import type { BoardSolveResult, Placement, SearchStopReason } from './types'
 
 export interface SolveOptions {
   mountKey?: MountKey
@@ -56,10 +56,11 @@ export interface SolveOptions {
    * Set this for non-equipped mounts (which don't grant line bonuses).
    */
   disableLineBonuses?: boolean
+  /** Starting-stat order shared across a multi-board run. */
+  debuffPriority?: readonly StatKey[]
   /**
-   * Stop once no remaining candidate can beat the best layout by more than
-   * this fraction (default 0.01 = result is provably within 1% of optimal).
-   * Pass 0 for an exhaustive proof of optimality.
+   * Heuristic stopping tolerance on estimated gains (default 0.01).
+   * This is not a certified optimality gap, even when set to zero.
    */
   optimalityTolerance?: number
   /** DFS node cap for refining one mix's piece selection (default 2000). */
@@ -101,11 +102,8 @@ const SELECTION_NODE_BUDGET = 2_000
  * - K < G: tile all inventory pieces (selection is fixed). If the inventory's
  *   shape mix can't tile, fall back to dropping one piece (try each removal).
  *
- * - K ≥ G: enumerate shape-distributions of size G, G-1, G-2 that fit within
- *   inventory shape counts. Rank by an admissible upper bound on score; for
- *   each distribution in rank order, find a tiling and optimize the piece
- *   selection. Prune distributions whose upper bound can't beat the current
- *   best.
+ * - K ≥ G: rank near-full shape mixes by a greedy estimate, then tile and
+ *   refine their selections. This fast search does not certify optimality.
  */
 export async function solve(
   inventory: Piece[],
@@ -138,6 +136,7 @@ export async function solve(
     tiers,
     mountLevel,
     pieceBuffMultiplier,
+    debuffPriority: opts.debuffPriority ?? debuffPriorityFor(currentStats),
     optimalityTolerance: opts.optimalityTolerance ?? 0.01,
     selectionNodeBudget: opts.selectionNodeBudget ?? SELECTION_NODE_BUDGET,
     patience: opts.patience ?? DEFAULT_PATIENCE,
@@ -151,6 +150,7 @@ export async function solve(
     explored: 0,
     cancelled: false,
     truncated: false,
+    stopReason: 'completed',
     lastYield: started,
     // Back-date so the first improvement bypasses the throttle and always
     // reaches the UI as a preliminary result, even if it's found early.
@@ -166,6 +166,7 @@ export async function solve(
       : await solveFullInventory(ctx)
   result.elapsedMs = performance.now() - started
   result.truncated = ctx.truncated
+  result.stopReason = ctx.stopReason
   return result
 }
 
@@ -177,6 +178,7 @@ interface SolveContext {
   tiers: LineBonusTier[]
   mountLevel: MountLevel
   pieceBuffMultiplier: number
+  debuffPriority: readonly StatKey[]
   optimalityTolerance: number
   selectionNodeBudget: number
   patience: number
@@ -194,6 +196,7 @@ interface SolveContext {
   explored: number
   cancelled: boolean
   truncated: boolean
+  stopReason: SearchStopReason
   lastYield: number
   lastProgress: number
   /** Distributions queued for evaluation in the K≥G regime. 0 in the K<G regime. */
@@ -220,9 +223,7 @@ async function solveSmallInventory(ctx: SolveContext): Promise<BoardSolveResult>
     ctx.maxBonusLines,
     ctx.cols,
   )
-  const tiling = tileDistribution(fullDist, ctx.cols, target, {
-    deadline: ctx.deadline,
-  })
+  const tiling = runTiling(ctx, fullDist, target)
   if (tiling && tiling.lines >= target) {
     return buildResult(ctx, ctx.inventory, tiling.slots, tiling.lines)
   }
@@ -250,15 +251,14 @@ async function solveSmallInventory(ctx: SolveContext): Promise<BoardSolveResult>
     if (fullDist[shape] === 0) continue
     if (await maybeYield(ctx)) break
     const droppedDist = { ...fullDist, [shape]: fullDist[shape] - 1 }
-    const droppedTiling = tileDistribution(
+    const droppedTiling = runTiling(
+      ctx,
       droppedDist,
-      ctx.cols,
       effectiveLineTarget(
         totalShapeCells(droppedDist),
         ctx.maxBonusLines,
         ctx.cols,
       ),
-      { deadline: ctx.deadline },
     )
     if (!droppedTiling) continue
     for (let i = 0; i < ctx.inventory.length; i++) {
@@ -307,6 +307,7 @@ async function solveFullInventory(
     ctx.tiers,
     ctx.mountLevel,
     ctx.pieceBuffMultiplier,
+    ctx.debuffPriority,
   )
   const queue: QueueEntry[] = distributions.map((dist) => ({
     dist,
@@ -338,6 +339,7 @@ async function solveFullInventory(
       (entry.ub - startScore) * GAIN_SLACK <=
       (bestScore - startScore) * threshold
     ) {
+      if (ctx.stopReason === 'completed') ctx.stopReason = 'heuristic'
       ctx.distProcessed = ctx.distTotal
       maybeProgress(ctx)
       break
@@ -367,8 +369,9 @@ async function solveFullInventory(
       ctx.tiers,
       ctx.mountLevel,
       ctx.pieceBuffMultiplier,
-      { seed, nodeBudget: ctx.selectionNodeBudget },
+      { seed, nodeBudget: ctx.selectionNodeBudget, debuffPriority: ctx.debuffPriority },
     )
+    if (selection.complete === false && ctx.stopReason === 'completed') ctx.stopReason = 'nodeLimit'
     ctx.explored++
 
     if (selection.score > bestScore) {
@@ -390,6 +393,7 @@ async function solveFullInventory(
     // bound alone can't prune them. Mixes are tried best-first, so a long run
     // of evaluated mixes without a meaningful gain means the rest won't matter.
     if (sinceImprovement >= ctx.patience) {
+      if (ctx.stopReason === 'completed') ctx.stopReason = 'heuristic'
       ctx.distProcessed = ctx.distTotal
       maybeProgress(ctx)
       break
@@ -421,11 +425,32 @@ function cachedTile(
   const key = `${ctx.cols}|${target}|${SHAPE_KEYS.map((s) => dist[s]).join(',')}`
   const hit = tilingCache.get(key)
   if (hit !== undefined) return hit
-  const result = tileDistribution(dist, ctx.cols, target, {
+  const searched = searchTiling(dist, ctx.cols, target, {
     deadline: ctx.deadline,
+    isCancelled: ctx.isCancelled,
   })
-  if (performance.now() < ctx.deadline) tilingCache.set(key, result)
-  return result
+  recordTilingStop(ctx, searched.stopReason)
+  // Budget exhaustion is unknown, never a cached proof of infeasibility.
+  if (searched.complete) tilingCache.set(key, searched.result)
+  return searched.result
+}
+
+function recordTilingStop(ctx: SolveContext, reason: 'nodeLimit' | 'timeLimit' | 'cancelled' | undefined): void {
+  if (!reason) return
+  if (reason === 'timeLimit' || reason === 'cancelled') {
+    ctx.stopReason = reason
+    ctx.cancelled = true
+    ctx.truncated = reason === 'timeLimit'
+  } else if (ctx.stopReason === 'completed') ctx.stopReason = reason
+}
+
+function runTiling(ctx: SolveContext, dist: ShapeCounts, target: number): TilingResult | null {
+  const searched = searchTiling(dist, ctx.cols, target, {
+    deadline: ctx.deadline,
+    isCancelled: ctx.isCancelled,
+  })
+  recordTilingStop(ctx, searched.stopReason)
+  return searched.result
 }
 
 /**
@@ -537,15 +562,28 @@ function emptyResult(ctx: SolveContext): BoardSolveResult {
  */
 async function maybeYield(ctx: SolveContext): Promise<boolean> {
   const now = performance.now()
+  if (ctx.isCancelled?.()) {
+    ctx.cancelled = true
+    ctx.stopReason = 'cancelled'
+  } else if (now >= ctx.deadline) {
+    ctx.cancelled = true
+    ctx.truncated = true
+    ctx.stopReason = 'timeLimit'
+  }
+  if (ctx.cancelled) return true
   if (now - ctx.lastYield < YIELD_INTERVAL_MS) {
     return ctx.cancelled
   }
   await new Promise<void>((r) => setTimeout(r, 0))
   ctx.lastYield = performance.now()
-  if (ctx.isCancelled?.()) ctx.cancelled = true
+  if (ctx.isCancelled?.()) {
+    ctx.cancelled = true
+    ctx.stopReason = 'cancelled'
+  }
   if (performance.now() > ctx.deadline) {
     ctx.cancelled = true
     ctx.truncated = true
+    ctx.stopReason = 'timeLimit'
   }
   return ctx.cancelled
 }

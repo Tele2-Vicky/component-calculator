@@ -4,6 +4,9 @@ import type { Piece, StatTotals } from '../data/types'
 
 export const BOARD_ROWS = 8
 
+export type SearchStopReason = 'completed' | 'heuristic' | 'nodeLimit' | 'timeLimit' | 'cancelled'
+export type SearchPhase = 'boards' | 'refining'
+
 export interface Placement {
   pieceId: string
   rotation: number
@@ -37,6 +40,7 @@ export interface BoardSolveResult {
   elapsedMs: number
   mountKey: MountKey
   truncated: boolean
+  stopReason?: SearchStopReason
 }
 
 /**
@@ -62,6 +66,7 @@ export interface BoardResult {
    * layout for this board (the UI surfaces a "raise the time limit" warning).
    */
   truncated?: boolean
+  stopReason?: SearchStopReason
 }
 
 export interface MountConfig {
@@ -80,13 +85,16 @@ export interface OptimizerInput {
    * by descending sync rate).
    */
   mountConfigs: MountConfig[]
-  /** Total time budget across **all** boards, not per-board. */
+  /** Per-board search budget, followed by a short allocation-refinement pass. */
   timeBudgetMs?: number
 }
 
 export interface OptimizerResult {
   equippedMountKey: MountKey
-  /** Ordered: equipped first, then non-equipped by descending sync rate. */
+  /**
+   * Includes requested mounts left empty when inventory is exhausted.
+   * Ordered: equipped first, then non-equipped by descending sync rate.
+   */
   boards: BoardResult[]
   /** Pieces left over after every board has been filled. */
   unusedPieceIds: string[]
@@ -96,6 +104,7 @@ export interface OptimizerResult {
   afterScore: number
   elapsedMs: number
   truncated: boolean
+  stopReason?: SearchStopReason
 }
 
 export interface ProgressMessage {
@@ -114,6 +123,7 @@ export interface ProgressMessage {
   boardIndex?: number
   /** Total number of boards this run will optimize. */
   boardCount?: number
+  phase?: SearchPhase
 }
 
 export interface DoneMessage {

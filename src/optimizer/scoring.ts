@@ -1,7 +1,9 @@
 import { BUFF_TABLE } from '../data/buffTable'
 import type { LineBonusTier, MountLevel } from '../data/lineBonuses'
-import { zeroStats } from '../data/stats'
-import type { Piece, StatKey, StatTotals } from '../data/types'
+import { SCORE_STAT_KEYS, STAT_KEYS, zeroStats } from '../data/stats'
+import type { Piece, ScoreStatKey, StatTotals } from '../data/types'
+import { MOUNTS } from '../data/mounts'
+import type { BoardResult } from './types'
 
 /**
  * Mutates `stats` in place to add cumulative line-clear bonuses for L filled
@@ -25,9 +27,9 @@ export function applyLineBonuses(
     if (tier.unlockedAtLevel > mountLevel) continue
     const inc = tier.bonus ?? tier.compute?.(stats)
     if (!inc) continue
-    for (const key of Object.keys(inc) as StatKey[]) {
+    for (const key of Object.keys(inc) as ScoreStatKey[]) {
       const v = inc[key]
-      if (v != null) stats[key] += v
+      if (v != null) stats[key] = (stats[key] ?? 0) + v
     }
   }
 }
@@ -40,6 +42,7 @@ export function formula(s: StatTotals): number {
     (1 + s.shieldDamage / 100) *
     (1 + s.laceration / 100) *
     (1 + s.toBosses / 100) *
+    (1 + (s.vulnerability ?? 0) / 100) *
     (1 + (s.toWeakened + s.toPoisoned + s.toChilled) / 100)
   )
 }
@@ -58,7 +61,7 @@ export function marginalGainOf(piece: Piece, currentStats: StatTotals): number {
 }
 
 export function cloneStats(s: StatTotals): StatTotals {
-  return { ...s }
+  return { vulnerability: 0, ...s }
 }
 
 /**
@@ -120,9 +123,38 @@ export function finalizeStats(
 
   const buffsFromPieces = zeroStats()
   const buffsFromLines = zeroStats()
-  for (const k of Object.keys(buffsFromPieces) as StatKey[]) {
-    buffsFromPieces[k] = afterPieces[k] - currentStats[k]
-    buffsFromLines[k] = final[k] - afterPieces[k]
+  for (const k of SCORE_STAT_KEYS) {
+    buffsFromPieces[k] = (afterPieces[k] ?? 0) - (currentStats[k] ?? 0)
+    buffsFromLines[k] = (final[k] ?? 0) - (afterPieces[k] ?? 0)
   }
   return { final, buffsFromPieces, buffsFromLines }
+}
+
+/**
+ * Canonical complete-allocation objective. The equipped board's dynamic tiers
+ * see pre-mount stats, its own pieces and earlier equipped tiers, just as in
+ * scoreLayout. Other boards then add their sync-scaled piece buffs.
+ */
+export function evaluateBoards(
+  currentStats: StatTotals,
+  boards: BoardResult[],
+): { boards: BoardResult[]; finalStats: StatTotals; score: number } {
+  const stats = cloneStats(currentStats)
+  const evaluated: BoardResult[] = []
+  const ordered = [...boards].sort((a, b) => Number(b.isEquipped) - Number(a.isEquipped))
+  for (const board of ordered) {
+    for (const key of STAT_KEYS) {
+      stats[key] += board.buffsFromPieces[key] * board.syncRate / 100
+    }
+    const beforeLines = cloneStats(stats)
+    if (board.isEquipped) {
+      applyLineBonuses(stats, board.linesFilled, MOUNTS[board.mountKey].lineBonusTiers, board.mountLevel)
+    }
+    const buffsFromLines = zeroStats()
+    for (const key of SCORE_STAT_KEYS) {
+      buffsFromLines[key] = (stats[key] ?? 0) - (beforeLines[key] ?? 0)
+    }
+    evaluated.push({ ...board, buffsFromLines })
+  }
+  return { boards: evaluated, finalStats: stats, score: formula(stats) }
 }

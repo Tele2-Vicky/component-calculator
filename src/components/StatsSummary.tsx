@@ -1,4 +1,4 @@
-import { STATS } from '../data/stats'
+import { SCORE_STATS } from '../data/stats'
 import type { StatTotals } from '../data/types'
 import { StatIcon } from './icons/StatIcon'
 
@@ -16,6 +16,8 @@ interface Props {
   secondaryValues: StatTotals
   secondaryKind: SecondaryColumnKind
   secondaryLabel: string
+  /** Pending line bonuses are unknown, rather than known zero values. */
+  secondaryPending?: boolean
   /** Round contribution columns to 2 decimals (used in the All-mounts view). */
   roundContributions?: boolean
   /** Tabs to render above the table. Hidden when undefined or length<=1. */
@@ -38,6 +40,7 @@ export function StatsSummary({
   secondaryValues,
   secondaryKind,
   secondaryLabel,
+  secondaryPending = false,
   roundContributions,
   tabs,
   activeTabId,
@@ -80,14 +83,14 @@ export function StatsSummary({
               <th className="text-right px-0.5 sm:px-2 py-1 font-normal whitespace-nowrap">Before</th>
               <th className="text-right px-0.5 sm:px-2 py-1 font-normal whitespace-nowrap">+ Pieces</th>
               <th className="text-right px-0.5 sm:px-2 py-1 font-normal leading-tight">{secondaryLabel}</th>
-              <th className="text-right px-0.5 sm:px-2 py-1 font-normal whitespace-nowrap">After</th>
+              <th className="text-right px-0.5 sm:px-2 py-1 font-normal whitespace-nowrap">{secondaryPending ? 'After (known)' : 'After'}</th>
             </tr>
           </thead>
           <tbody>
-            {STATS.map((s) => {
-              const before = currentStats[s.key]
-              const piece = buffsFromPieces[s.key]
-              const secondary = secondaryValues[s.key]
+            {SCORE_STATS.map((s) => {
+              const before = currentStats[s.key] ?? 0
+              const piece = buffsFromPieces[s.key] ?? 0
+              const secondary = secondaryValues[s.key] ?? 0
               const after = before + piece + secondary
               return (
                 <tr key={s.key} className="border-t border-bg-line">
@@ -110,7 +113,7 @@ export function StatsSummary({
                   <td
                     className={`px-0.5 sm:px-2 py-1.5 text-right whitespace-nowrap ${secondaryColor}`}
                   >
-                    {secondary > 0 ? `+${fmt(secondary, dp)}%` : '—'}
+                    {secondaryPending ? 'TBA' : secondary > 0 ? `+${fmt(secondary, dp)}%` : '—'}
                   </td>
                   <td className="px-0.5 sm:px-2 py-1.5 text-right text-white font-medium whitespace-nowrap">
                     {fmt(after, dp)}%

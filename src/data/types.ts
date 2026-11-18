@@ -26,4 +26,7 @@ export interface Piece {
   stat: StatKey
 }
 
-export type StatTotals = Record<StatKey, number>
+/** Vulnerability is a player/mount stat, not a component type. */
+export type ScoreStatKey = StatKey | 'vulnerability'
+/** Optional for compatibility with existing saved eight-stat inventories. */
+export type StatTotals = Record<StatKey, number> & { vulnerability?: number }

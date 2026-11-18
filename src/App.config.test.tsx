@@ -1,0 +1,234 @@
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import App from './App'
+import { decodeConfig, encodeConfig } from './utils/config'
+import { MOUNT_KEYS, MOUNTS, type MountKey } from './data/mounts'
+import type { MountLevel } from './data/lineBonuses'
+import { zeroStats } from './data/stats'
+import type { Piece } from './data/types'
+import { solveAll } from './optimizer/solveAll'
+import type { WorkerMessage } from './optimizer/types'
+
+beforeEach(() => window.localStorage.clear())
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+const setup = () => ({
+  currentStats: zeroStats(), pieces: [] as Piece[], selectedMountKey: 'electricScooter' as const,
+  mountLevels: Object.fromEntries(MOUNT_KEYS.map((key) => [key, 0])) as Record<MountKey, MountLevel>,
+  unlockedMounts: Object.fromEntries(MOUNT_KEYS.map((key) => [key, key === 'electricScooter'])) as Record<MountKey, boolean>,
+  optimizeScope: 'allUnlocked' as const, fullTimeLimit: { enabled: true, seconds: 120 },
+})
+
+function wrap(version: number, payload: object): string {
+  return `mount-opt:v${version}:${btoa(JSON.stringify(payload))}`
+}
+
+function legacyPayload(version: number) {
+  const compact = JSON.parse(atob(encodeConfig(setup()).split(':')[2]))
+  compact.version = version
+  compact.g = 1
+  compact.m = 'n'
+  compact.l = 0
+  delete compact.lv.ruinWarskitter
+  delete compact.u.ruinWarskitter
+  if (version < 7) {
+    delete compact.lv.netherflameStalker
+    delete compact.u.netherflameStalker
+  }
+  return compact
+}
+
+describe('configuration compatibility', () => {
+  it('round-trips the setup in v10 exports', () => {
+    const config = setup()
+    const exported = encodeConfig(config)
+    expect(exported.startsWith('mount-opt:v10:')).toBe(true)
+    expect(decodeConfig(exported)).toEqual(config)
+    expect(JSON.parse(atob(exported.split(':')[2])).lv.ruinWarskitter).toBe(0)
+  })
+
+  it('preserves non-zero pre-mount Vulnerability in exports', () => {
+    const config = setup()
+    config.currentStats.vulnerability = 90
+    expect(decodeConfig(encodeConfig(config))).toEqual(config)
+  })
+
+  it('shows and opens empty mount boards after the inventory runs out', async () => {
+    let onMessage: ((event: { data: WorkerMessage }) => void) | undefined
+    vi.stubGlobal('Worker', class {
+      addEventListener(_type: string, listener: (event: { data: WorkerMessage }) => void) { onMessage = listener }
+      postMessage = vi.fn()
+      terminate = vi.fn()
+    })
+    const config = setup()
+    const pieces: Piece[] = [{ id: 'only-piece', shape: 'I', quality: 'good', stat: 'skillDamage' }]
+    window.localStorage.setItem('mount-opt:pieces:v1', JSON.stringify(pieces))
+    window.localStorage.setItem('mount-opt:unlocked-mounts:v1', JSON.stringify(
+      Object.fromEntries(MOUNT_KEYS.map((key) => [key, true])),
+    ))
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Run optimizer' }))
+    const result = await solveAll(pieces, zeroStats(), MOUNT_KEYS.map((key) => ({
+      mountKey: key, mountLevel: config.mountLevels[key], isEquipped: key === config.selectedMountKey,
+    })))
+    act(() => onMessage!({ data: { type: 'done', result } }))
+
+    const resultPanel = screen.getByRole('heading', { name: 'Result' }).closest('.panel-frame')!
+    const view = within(resultPanel as HTMLElement)
+    for (const key of MOUNT_KEYS) {
+      expect(view.getByRole('button', { name: new RegExp(`${MOUNTS[key].name}.*(?:pieces?|Empty board)$`) })).toBeInTheDocument()
+    }
+    expect(view.getAllByText('Empty board')).toHaveLength(4)
+    const emptyBoard = view.getByRole('button', { name: /Doomsteed.*Empty board/ })
+    fireEvent.click(emptyBoard)
+    expect(emptyBoard).toHaveAttribute('aria-pressed', 'true')
+    expect(view.getByText('0 lines filled · 0 pieces placed')).toBeInTheDocument()
+    expect(resultPanel.querySelector('svg')!.querySelectorAll('g')).toHaveLength(0)
+    expect(screen.queryByText(/Time limit too low/)).not.toBeInTheDocument()
+  })
+
+  it('loads v9 exports with zero Vulnerability while preserving the original eight stats', () => {
+    const config = setup()
+    config.currentStats.skillDamage = 1_405
+    config.currentStats.toChilled = 1_068.82
+    const payload = JSON.parse(atob(encodeConfig(config).split(':')[2]))
+    payload.version = 9
+    delete payload.vu
+    expect(decodeConfig(wrap(9, payload))).toEqual(config)
+  })
+
+  it.each([undefined, -1, null, '90'])('rejects invalid v10 Vulnerability: %s', (vu) => {
+    const payload = JSON.parse(atob(encodeConfig(setup()).split(':')[2]))
+    expect(() => decodeConfig(wrap(10, { ...payload, vu }))).toThrow('invalid')
+  })
+
+  it.each([1, 2, 3, 4, 5, 6, 7])('loads v%i setups', (version) => {
+    const config = setup()
+    const compact = legacyPayload(version)
+    const payload = version === 1 ? { version: 1, currentStats: config.currentStats, pieces: [], mode: 'normal', fullTimeLimit: config.fullTimeLimit } : compact
+    expect(decodeConfig(wrap(version, payload))).toEqual(config)
+  })
+
+  it('rejects a malformed legacy v8 flag', () => {
+    const compact = legacyPayload(8)
+    expect(() => decodeConfig(wrap(8, { ...compact, g: 'exhaustive' }))).toThrow('invalid')
+  })
+
+  it.each([0, 1])('loads a v8 setup with retired mode flag %i', (g) => {
+    const compact = legacyPayload(8)
+    expect(decodeConfig(wrap(8, { ...compact, g }))).toEqual(setup())
+  })
+
+  it('round-trips Ruin as equipped with its own level and unlock status', () => {
+    const config = setup()
+    config.mountLevels.ruinWarskitter = 4
+    config.unlockedMounts.ruinWarskitter = true
+    const withRuin = { ...config, selectedMountKey: 'ruinWarskitter' as const }
+    expect(decodeConfig(encodeConfig(withRuin))).toEqual(withRuin)
+  })
+
+  it('preserves a pre-Ruin v8 setup and appends Ruin locked at level zero', () => {
+    const compact = legacyPayload(8)
+    compact.mt = 'netherflameStalker'
+    compact.lv = { electricScooter: 5, techHoverboard: 7, doomsteed: 1, netherflameStalker: 3 }
+    compact.u = { electricScooter: 1, techHoverboard: 1, doomsteed: 1, netherflameStalker: 1 }
+    const loaded = decodeConfig(wrap(8, compact))
+    expect(loaded.selectedMountKey).toBe('netherflameStalker')
+    expect(loaded.mountLevels).toEqual({ ...compact.lv, ruinWarskitter: 0 })
+    expect(loaded.unlockedMounts).toEqual({ electricScooter: true, techHoverboard: true, doomsteed: true, netherflameStalker: true, ruinWarskitter: false })
+  })
+
+  it('requires valid Ruin data in v9 imports and force-unlocks the equipped mount', () => {
+    const compact = JSON.parse(atob(encodeConfig(setup()).split(':')[2]))
+    compact.version = 9
+    compact.mt = 'ruinWarskitter'
+    expect(decodeConfig(wrap(9, compact)).unlockedMounts.ruinWarskitter).toBe(true)
+    compact.lv.ruinWarskitter = 9
+    expect(() => decodeConfig(wrap(9, compact))).toThrow('invalid')
+    delete compact.lv.ruinWarskitter
+    expect(() => decodeConfig(wrap(9, compact))).toThrow('invalid')
+  })
+
+  it('displays known Ruinous Vulnerability and removes the provisional TBA labels', async () => {
+    let onMessage: ((event: { data: WorkerMessage }) => void) | undefined
+    vi.stubGlobal('Worker', class {
+      addEventListener(_type: string, listener: (event: { data: WorkerMessage }) => void) { onMessage = listener }
+      postMessage = vi.fn()
+      terminate = vi.fn()
+    })
+    const config = setup()
+    config.unlockedMounts.ruinWarskitter = true
+    const pieces: Piece[] = [{ id: 'ruin-piece', shape: 'I', quality: 'good', stat: 'skillDamage' }]
+    window.localStorage.setItem('mount-opt:selected-mount:v1', JSON.stringify('ruinWarskitter'))
+    window.localStorage.setItem('mount-opt:unlocked-mounts:v1', JSON.stringify(config.unlockedMounts))
+    window.localStorage.setItem('mount-opt:mount-levels:v1', JSON.stringify(config.mountLevels))
+    window.localStorage.setItem('mount-opt:pieces:v1', JSON.stringify(pieces))
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Run optimizer' }))
+    const result = await solveAll(pieces, zeroStats(), [
+      { mountKey: 'ruinWarskitter', mountLevel: 0, isEquipped: true },
+    ])
+    expect(onMessage).toBeDefined()
+    act(() => onMessage!({ data: { type: 'done', result } }))
+    expect(screen.getByRole('note')).toHaveTextContent('Vulnerability is maintained')
+    expect(screen.getByText('Best score')).toBeInTheDocument()
+    expect(screen.queryByText('TBA')).not.toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'After' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: '+ Mount' })).toBeInTheDocument()
+    const row = screen.getAllByText('Vulnerability', { selector: 'span' }).find((node) => node.closest('tr'))!.closest('tr')!
+    expect(within(row).getAllByRole('cell').slice(1).map((cell) => cell.textContent)).toEqual(['0%', '—', '+30%', '30%'])
+  })
+
+  it.each([4, 8] as const)('explains only active Ruinous bonus assumptions at mount level %i', async (level) => {
+    let onMessage: ((event: { data: WorkerMessage }) => void) | undefined
+    vi.stubGlobal('Worker', class {
+      addEventListener(_type: string, listener: (event: { data: WorkerMessage }) => void) { onMessage = listener }
+      postMessage = vi.fn()
+      terminate = vi.fn()
+    })
+    const config = setup()
+    config.mountLevels.ruinWarskitter = level
+    config.unlockedMounts.ruinWarskitter = true
+    const pieces: Piece[] = Array.from({ length: 24 }, (_, index) => ({
+      id: `ruin-${index}`, shape: 'I', quality: 'good', stat: 'skillDamage',
+    }))
+    window.localStorage.setItem('mount-opt:selected-mount:v1', JSON.stringify('ruinWarskitter'))
+    window.localStorage.setItem('mount-opt:unlocked-mounts:v1', JSON.stringify(config.unlockedMounts))
+    window.localStorage.setItem('mount-opt:mount-levels:v1', JSON.stringify(config.mountLevels))
+    window.localStorage.setItem('mount-opt:pieces:v1', JSON.stringify(pieces))
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Run optimizer' }))
+    const result = await solveAll(pieces, zeroStats(), [
+      { mountKey: 'ruinWarskitter', mountLevel: level, isEquipped: true },
+    ])
+    act(() => onMessage!({ data: { type: 'done', result } }))
+    expect(screen.getByText('Assumes six stacks for the 5-line bonus (+60% Shield Damage).')).toBeInTheDocument()
+    expect(screen.getByText(/Assumes five Enhancement stacks/)).toBeInTheDocument()
+    if (level === 8) {
+      expect(screen.getByText(/230% total from this mount/)).toBeInTheDocument()
+    } else {
+      expect(screen.queryByText(/230% total from this mount/)).not.toBeInTheDocument()
+    }
+    // Picker edits do not change which mount produced the frozen result.
+    fireEvent.click(screen.getByRole('button', { name: 'Select Electric Scooter' }))
+    expect(screen.getByText('Assumes six stacks for the 5-line bonus (+60% Shield Damage).')).toBeInTheDocument()
+  })
+
+  it.each([false, true])('ignores the retired persisted mode %s when running the optimizer', (greedy) => {
+    window.localStorage.setItem('mount-opt:greedy:v1', JSON.stringify(greedy))
+    const postMessage = vi.fn()
+    vi.stubGlobal('Worker', class {
+      addEventListener = vi.fn()
+      postMessage = postMessage
+      terminate = vi.fn()
+    })
+    window.localStorage.setItem('mount-opt:pieces:v1', JSON.stringify([
+      { id: 'one-piece', shape: 'I', quality: 'legend', stat: 'skillDamage' },
+    ]))
+    render(<App />)
+    expect(screen.queryByRole('checkbox', { name: 'Greedy' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Run optimizer' }))
+    expect(postMessage).toHaveBeenCalledOnce()
+    expect(postMessage.mock.calls[0][0]).not.toHaveProperty('greedy')
+  })
+})

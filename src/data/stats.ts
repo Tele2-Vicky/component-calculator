@@ -1,4 +1,4 @@
-import type { StatKey, StatTotals } from './types'
+import type { ScoreStatKey, StatKey, StatTotals } from './types'
 import critDamageIcon from '../assets/icons/pets/skills/inspiration.webp'
 import skillDamageIcon from '../assets/icons/pets/skills/encouragement.webp'
 import shieldDamageIcon from '../assets/icons/pets/skills/shield_damage.webp'
@@ -7,6 +7,7 @@ import poisonedIcon from '../assets/icons/pets/skills/poisoned.webp'
 import chilledIcon from '../assets/icons/pets/skills/chilled.webp'
 import lacerationIcon from '../assets/icons/stats/laceration.webp'
 import bossesIcon from '../assets/icons/damage_boss.webp'
+import vulnerabilityIcon from '../assets/icons/stats/vulnerability.webp'
 
 export interface StatMeta {
   key: StatKey
@@ -72,6 +73,16 @@ export const STAT_META: Record<StatKey, StatMeta> = Object.fromEntries(
   STATS.map((s) => [s.key, s]),
 ) as Record<StatKey, StatMeta>
 
+export type ScoreStatMeta = Omit<StatMeta, 'key'> & { key: ScoreStatKey }
+export const SCORE_STATS: ScoreStatMeta[] = [
+  ...STATS,
+  { key: 'vulnerability', name: 'Vulnerability', short: 'Vulnerability', icon: vulnerabilityIcon },
+]
+export const SCORE_STAT_KEYS: ScoreStatKey[] = SCORE_STATS.map((stat) => stat.key)
+export const SCORE_STAT_META = Object.fromEntries(
+  SCORE_STATS.map((stat) => [stat.key, stat]),
+) as Record<ScoreStatKey, ScoreStatMeta>
+
 export function zeroStats(): StatTotals {
   return {
     critDamage: 0,
@@ -82,18 +93,33 @@ export function zeroStats(): StatTotals {
     toChilled: 0,
     laceration: 0,
     toBosses: 0,
+    vulnerability: 0,
   }
 }
 
 /**
- * Preference order among the three debuff-conditional stats, which share one
- * additive damage pool. When options score equally, prefer the stat that is
- * easiest to apply in practice: chilled, then poisoned, then weakened.
+ * Fallback order when the player's starting elemental stats are equal.
+ * Otherwise equal-grade elemental choices favor the highest starting stat.
  */
 export const DEBUFF_PRIORITY: StatKey[] = ['toChilled', 'toPoisoned', 'toWeakened']
 
+/** Fixed for a run so earlier boards' buffs cannot change the preference. */
+export function debuffPriorityFor(stats: StatTotals): StatKey[] {
+  return [...DEBUFF_PRIORITY].sort((a, b) => stats[b] - stats[a])
+}
+
 /** Rank of a stat for tie-breaking: lower is preferred; non-debuffs sort last. */
-export function debuffRank(stat: StatKey): number {
-  const i = DEBUFF_PRIORITY.indexOf(stat)
-  return i === -1 ? DEBUFF_PRIORITY.length : i
+export function debuffRank(stat: StatKey, priority: readonly StatKey[] = DEBUFF_PRIORITY): number {
+  const i = priority.indexOf(stat)
+  return i === -1 ? priority.length : i
+}
+
+/** Compare elemental contributions lexicographically, ignoring float noise. */
+export function prefersDebuffs(a: StatTotals, b: StatTotals, priority: readonly StatKey[]): boolean {
+  for (const key of priority) {
+    if (Math.abs(a[key] - b[key]) > 1e-9 * Math.max(1, Math.abs(a[key]), Math.abs(b[key]))) {
+      return a[key] > b[key]
+    }
+  }
+  return false
 }

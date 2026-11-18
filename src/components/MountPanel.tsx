@@ -190,7 +190,7 @@ function MountIcon({
           fontWeight="700"
           letterSpacing="-1"
         >
-          NS
+          TBA
         </text>
       )}
     </svg>
@@ -213,7 +213,7 @@ export function MountPanel({
   return (
     <PanelShell title="Mount">
       <div className="flex flex-col gap-3 mt-1">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {MOUNT_KEYS.map((key) => {
             const mount = MOUNTS[key]
             const isUnlocked = unlocked[key]
@@ -270,6 +270,11 @@ export function MountPanel({
                   disabled={!isUnlocked}
                   onChange={(lv) => onLevelChange(key, lv)}
                 />
+                {mount.lineBonusesPending && (
+                  <div className="text-[11px] text-gray-400 text-center">
+                    Line bonuses: TBA
+                  </div>
+                )}
                 {isUnlocked && !isSelected && (
                   <div className="text-[11px] text-gray-400 text-center">
                     Sync rate{' '}

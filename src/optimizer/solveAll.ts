@@ -1,13 +1,15 @@
 import { syncRateFor, type MountKey } from '../data/mounts'
-import { STAT_KEYS, zeroStats } from '../data/stats'
-import type { Piece, StatKey, StatTotals } from '../data/types'
-import { addPieceBuffs, cloneStats, formula } from './scoring'
+import { SCORE_STAT_KEYS, STAT_KEYS, debuffPriorityFor, zeroStats } from '../data/stats'
+import type { Piece, StatTotals } from '../data/types'
+import { addPieceBuffs, cloneStats, evaluateBoards, formula } from './scoring'
 import { solve } from './solve'
+import { refineAllocation } from './refine'
 import type {
   BoardResult,
   BoardSolveResult,
   MountConfig,
   OptimizerResult,
+  SearchPhase,
 } from './types'
 
 export interface SolveAllOptions {
@@ -25,11 +27,10 @@ export interface SolveAllOptions {
     fractionComplete: number,
     boardIndex: number,
     boardCount: number,
+    phase?: SearchPhase,
   ) => void
   /**
-   * Per-board time budget. Each board's `solve()` gets this same budget
-   * fresh — if board 1 truncates, the leftover pieces are still optimized
-   * against board 2 with another full `timeBudgetMs`, and so on.
+   * Fresh per-board budget, followed by a short allocation-refinement pass.
    */
   timeBudgetMs?: number
   /** Forwarded to each board's `solve()`; see `SolveOptions.patience`. */
@@ -39,11 +40,8 @@ export interface SolveAllOptions {
 /**
  * Multi-board optimizer.
  *
- * Pieces placed on a non-equipped mount's board only contribute (syncRate)%
- * of their full buff and grant no line bonuses, so it's strictly better to
- * fill the equipped board first with the most-valuable pieces, then the
- * highest-sync-rate non-equipped mount with the leftover, and so on. Each
- * board is solved independently with the running stats from prior boards.
+ * Seeds boards sequentially, then refines the complete allocation with
+ * same-shape exchanges. This heuristic search does not prove optimality.
  *
  * `mountConfigs` must contain exactly one entry with `isEquipped: true`. The
  * order of `mountConfigs` is irrelevant — this function decides the
@@ -59,6 +57,46 @@ export async function solveAll(
   currentStats: StatTotals,
   mountConfigs: MountConfig[],
   opts: SolveAllOptions = {},
+): Promise<OptimizerResult> {
+  const started = performance.now()
+  if (mountConfigs.filter((c) => c.isEquipped).length !== 1) {
+    throw new Error('solveAll: mountConfigs must contain exactly one isEquipped mount')
+  }
+  if (new Set(mountConfigs.map((c) => c.mountKey)).size !== mountConfigs.length) {
+    throw new Error('solveAll: duplicate mount configuration')
+  }
+  if (STAT_KEYS.some((key) => !Number.isFinite(currentStats[key]) || currentStats[key] < 0) ||
+      !Number.isFinite(currentStats.vulnerability ?? 0) || (currentStats.vulnerability ?? 0) < 0) {
+    throw new Error('solveAll: current stats must be finite non-negative percentages')
+  }
+  const configs = [...mountConfigs].sort((a, b) =>
+    Number(b.isEquipped) - Number(a.isEquipped) ||
+    syncRateFor(b.mountKey, b.mountLevel) - syncRateFor(a.mountKey, a.mountLevel),
+  )
+  const equipped = configs[0]
+  const seed = await solveBoards(inventory, currentStats, configs, {
+    ...opts,
+    onProgress: (best, explored, key, fraction, index, count) => opts.onProgress?.(
+      best, explored, key, fraction, index, count, 'boards',
+    ),
+  })
+  const refined = await refineAllocation(inventory, currentStats, {
+    ...seed,
+    stopReason: opts.isCancelled?.() ? 'cancelled' : seed.truncated ? 'timeLimit' : seed.boards.some((b) => b.stopReason === 'nodeLimit') ? 'nodeLimit' : 'heuristic',
+  }, {
+    started,
+    deadline: performance.now() + 750,
+    isCancelled: opts.isCancelled,
+    onProgress: (best, explored) => opts.onProgress?.(best, explored, equipped.mountKey, 0, 1, 1, 'refining'),
+  })
+  return { ...refined, elapsedMs: performance.now() - started }
+}
+
+async function solveBoards(
+  inventory: Piece[],
+  currentStats: StatTotals,
+  mountConfigs: MountConfig[],
+  opts: SolveAllOptions,
 ): Promise<OptimizerResult> {
   const started = performance.now()
 
@@ -79,7 +117,8 @@ export async function solveAll(
       .sort((a, b) => b.syncRatePct - a.syncRatePct),
   ]
 
-  let runningStats = cloneStats(currentStats)
+  const runningStats = cloneStats(currentStats)
+  const debuffPriority = debuffPriorityFor(currentStats)
   let remainingInventory = inventory.slice()
   const boards: BoardResult[] = []
   let truncated = false
@@ -104,16 +143,7 @@ export async function solveAll(
     // board so the UI (which renders against status.progress.partial) always
     // sees the in-progress board in the result.
     if (opts.onProgress) {
-      const placeholder: BoardResult = {
-        mountKey: config.mountKey,
-        mountLevel: config.mountLevel,
-        isEquipped: config.isEquipped,
-        syncRate: syncRatePct,
-        placements: [],
-        buffsFromPieces: zeroStats(),
-        buffsFromLines: zeroStats(),
-        linesFilled: 0,
-      }
+      const placeholder = emptyBoardResult(config, syncRatePct)
       const partial = aggregate(
         [...boards, placeholder],
         equipped.mountKey,
@@ -168,6 +198,7 @@ export async function solveAll(
       mountLevel: config.mountLevel,
       pieceBuffMultiplier: multiplier,
       disableLineBonuses: !isEquipped,
+      debuffPriority,
       timeBudgetMs: opts.timeBudgetMs,
       patience: opts.patience,
       isCancelled: opts.isCancelled,
@@ -181,14 +212,24 @@ export async function solveAll(
     // Roll the running stats forward: solve already accounted for the
     // multiplier in `buffsFromPieces` and computed line bonuses (zero for
     // non-equipped). We can just add both diffs onto the running stats.
-    for (const k of STAT_KEYS) {
-      runningStats[k] += solved.buffsFromPieces[k] + solved.buffsFromLines[k]
+    for (const k of SCORE_STAT_KEYS) {
+      runningStats[k] = (runningStats[k] ?? 0) + (solved.buffsFromPieces[k] ?? 0) + (solved.buffsFromLines[k] ?? 0)
     }
 
     const placedIds = new Set(solved.placements.map((p) => p.pieceId))
     remainingInventory = remainingInventory.filter((p) => !placedIds.has(p.id))
 
-    if (remainingInventory.length === 0) break
+    if (remainingInventory.length === 0) {
+      // Preserve every requested mount in the result even though there are
+      // no pieces left to search with. These boards are complete, not timed out.
+      for (const next of order.slice(i + 1)) {
+        boards.push({
+          ...emptyBoardResult(next.config, next.syncRatePct),
+          stopReason: 'completed',
+        })
+      }
+      break
+    }
   }
 
   const beforeScore = formula(currentStats)
@@ -202,6 +243,18 @@ export async function solveAll(
     afterScore,
     elapsedMs: performance.now() - started,
     truncated,
+  }
+}
+
+function emptyBoardResult(config: MountConfig, syncRatePct: number): BoardResult {
+  return {
+    ...config,
+    syncRate: syncRatePct,
+    placements: [],
+    buffsFromPieces: zeroStats(),
+    buffsFromLines: zeroStats(),
+    linesFilled: 0,
+    truncated: false,
   }
 }
 
@@ -234,6 +287,7 @@ function makeBoardResult(
     buffsFromLines: solved.buffsFromLines,
     linesFilled: solved.linesFilled,
     truncated: solved.truncated,
+    stopReason: solved.stopReason,
   }
 }
 
@@ -246,22 +300,13 @@ function aggregate(
   truncated: boolean,
   elapsedMs: number,
 ): OptimizerResult {
-  const stats = cloneStats(initialStats)
-  for (const b of boards) {
-    const mult = b.syncRate / 100
-    for (const k of Object.keys(stats) as StatKey[]) {
-      stats[k] += b.buffsFromPieces[k] * mult
-    }
-    for (const k of Object.keys(stats) as StatKey[]) {
-      stats[k] += b.buffsFromLines[k]
-    }
-  }
+  const evaluated = evaluateBoards(initialStats, boards)
   return {
     equippedMountKey,
-    boards,
+    boards: evaluated.boards,
     unusedPieceIds,
     beforeScore: formula(initialStats),
-    afterScore: formula(stats),
+    afterScore: evaluated.score,
     elapsedMs,
     truncated,
   }

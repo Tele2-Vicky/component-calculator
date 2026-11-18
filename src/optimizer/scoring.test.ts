@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { BUFF_TABLE } from '../data/buffTable'
 import { MOUNTS } from '../data/mounts'
 import { zeroStats } from '../data/stats'
-import type { Piece } from '../data/types'
+import type { Piece, StatTotals } from '../data/types'
 import { applyLineBonuses, formula, scoreLayout } from './scoring'
 
 const ES_TIERS = MOUNTS.electricScooter.lineBonusTiers
@@ -10,6 +10,19 @@ const TH_TIERS = MOUNTS.techHoverboard.lineBonusTiers
 const DS_TIERS = MOUNTS.doomsteed.lineBonusTiers
 
 describe('formula', () => {
+  it('adds Vulnerability in its own multiplier and preserves legacy eight-stat inputs', () => {
+    const stats: StatTotals = { ...zeroStats(), skillDamage: 50, toChilled: 40, vulnerability: 90 }
+    expect(formula(stats)).toBeCloseTo(1.5 * 1.4 * 1.9, 10)
+    delete stats.vulnerability
+    expect(formula(stats)).toBeCloseTo(1.5 * 1.4, 10)
+  })
+
+  it('combines existing and mount Vulnerability additively before multiplying damage', () => {
+    const stats = { ...zeroStats(), vulnerability: 90 }
+    applyLineBonuses(stats, 4, MOUNTS.ruinWarskitter.lineBonusTiers, 0)
+    expect(stats.vulnerability).toBe(220)
+    expect(formula(stats)).toBeCloseTo(3.2 * 1.25 * 1.4 * 1.15, 10)
+  })
   it('returns 1 for all-zero stats', () => {
     expect(formula(zeroStats())).toBe(1)
   })

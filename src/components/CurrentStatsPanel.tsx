@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { STATS } from '../data/stats'
+import { SCORE_STAT_META } from '../data/stats'
 import type { StatTotals } from '../data/types'
 import { StatIcon } from './icons/StatIcon'
 import { PanelShell } from './PanelShell'
@@ -10,6 +10,18 @@ interface Props {
   onChange: (stats: StatTotals) => void
   onReset: () => void
 }
+
+const INPUT_STATS = [
+  SCORE_STAT_META.critDamage,
+  SCORE_STAT_META.skillDamage,
+  SCORE_STAT_META.vulnerability,
+  SCORE_STAT_META.shieldDamage,
+  SCORE_STAT_META.toWeakened,
+  SCORE_STAT_META.toPoisoned,
+  SCORE_STAT_META.toChilled,
+  SCORE_STAT_META.laceration,
+  SCORE_STAT_META.toBosses,
+]
 
 export function CurrentStatsPanel({ stats, onChange, onReset }: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -91,7 +103,7 @@ export function CurrentStatsPanel({ stats, onChange, onReset }: Props) {
         pieces or line-clear bonuses. The optimizer layers the pieces and line
         bonuses on top.
       </p>
-      <header className="flex items-center justify-end mb-4">
+      <header className="mb-4 flex flex-wrap items-center justify-end gap-2">
         <input
           ref={fileInputRef}
           type="file"
@@ -106,7 +118,7 @@ export function CurrentStatsPanel({ stats, onChange, onReset }: Props) {
           type="button"
           onClick={() => setIsImportOpen(true)}
           disabled={ocrLoading}
-          className="app-button px-2 py-1 text-xs mr-2"
+          className="app-button px-2 py-1 text-xs"
         >
           {ocrLoading ? 'Reading…' : 'Upload'}
         </button>
@@ -121,23 +133,32 @@ export function CurrentStatsPanel({ stats, onChange, onReset }: Props) {
       {ocrMessage && (
         <p className="text-xs text-gray-300 mb-3">{ocrMessage}</p>
       )}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {STATS.map((stat) => (
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        {INPUT_STATS.map((stat) => (
           <label
             key={stat.key}
-            className="panel-inner flex flex-col gap-1 p-3"
+            className="panel-inner grid min-w-0 grid-cols-[minmax(0,1fr)_6rem] items-center gap-2 p-2 sm:grid-cols-1 sm:grid-rows-[1fr_auto] sm:items-stretch sm:gap-1"
           >
-            <span className="flex items-center gap-2 text-xs text-gray-300">
-              <StatIcon stat={stat.key} size={20} />
+            <span className="relative flex min-h-10 min-w-0 flex-col items-center justify-center gap-1 text-center text-xs leading-4 text-gray-300">
+              <StatIcon stat={stat.key} size={20} className="shrink-0" />
               <span className="break-words">{stat.name}</span>
+              {stat.key === 'vulnerability' && (
+                <span
+                  className="absolute left-1/2 top-0 ml-4 rounded-full bg-blue-400/15 px-1.5 text-[10px] font-semibold leading-4 text-blue-200 ring-1 ring-inset ring-blue-300/30"
+                  title="New input: enter your Vulnerability before mount bonuses."
+                >
+                  New
+                </span>
+              )}
             </span>
-            <div className="flex items-center gap-1">
+            <div className="app-input flex h-8 w-full min-w-0 max-w-24 items-center justify-self-center focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
               <input
                 type="number"
+                aria-label={`${stat.name} (%)`}
                 inputMode="decimal"
                 min={0}
                 step="0.1"
-                value={Number.isFinite(stats[stat.key]) ? stats[stat.key] : 0}
+                value={Number.isFinite(stats[stat.key]) ? stats[stat.key] ?? 0 : 0}
                 onChange={(e) => {
                   const v = Number(e.target.value)
                   onChange({
@@ -145,9 +166,9 @@ export function CurrentStatsPanel({ stats, onChange, onReset }: Props) {
                     [stat.key]: Number.isFinite(v) && v >= 0 ? v : 0,
                   })
                 }}
-                className="app-input w-full px-2 py-1 text-sm focus:outline-none focus:border-accent"
+                className="h-full w-full min-w-0 bg-transparent px-2 text-center text-sm tabular-nums focus:outline-none"
               />
-              <span className="text-gray-500 text-sm">%</span>
+              <span aria-hidden="true" className="shrink-0 pr-2 text-sm text-gray-400">%</span>
             </div>
           </label>
         ))}

@@ -31,6 +31,146 @@ describe('solveAll', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
+
+  it.each([1, 25])('retains empty boards after allocating all %i pieces', async (pieceCount) => {
+    const inventory = Array.from({ length: pieceCount }, () => mk('I', 'legend', 'skillDamage'))
+    const configs: MountConfig[] = [
+      { mountKey: 'netherflameStalker', mountLevel: 3, isEquipped: true },
+      { mountKey: 'techHoverboard', mountLevel: 7, isEquipped: false },
+      { mountKey: 'doomsteed', mountLevel: 1, isEquipped: false },
+      { mountKey: 'ruinWarskitter', mountLevel: 0, isEquipped: false },
+      { mountKey: 'electricScooter', mountLevel: 5, isEquipped: false },
+    ]
+    const result = await solveAll(inventory, zeroStats(), configs)
+
+    expect(result.boards.map((board) => board.mountKey)).toEqual(configs.map((config) => config.mountKey))
+    expect(result.boards.map((board) => board.placements.length)).toEqual(
+      pieceCount === 1 ? [1, 0, 0, 0, 0] : [24, 1, 0, 0, 0],
+    )
+    expect(result.unusedPieceIds).toEqual([])
+    expect(result.truncated).toBe(false)
+    for (const board of result.boards.filter((board) => board.placements.length === 0)) {
+      const config = configs.find((config) => config.mountKey === board.mountKey)!
+      expect(board).toMatchObject({
+        ...config,
+        syncRate: syncRateFor(config.mountKey, config.mountLevel),
+        linesFilled: 0,
+        buffsFromPieces: zeroStats(),
+        buffsFromLines: zeroStats(),
+        truncated: false,
+        stopReason: 'completed',
+      })
+    }
+    // Empty synced boards add nothing, including Ruin's equipped-only base effect.
+    const expected = zeroStats()
+    expected.skillDamage = pieceCount === 1 ? 42 : 24 * 42 + 200 + 42 * 0.6
+    if (pieceCount > 1) {
+      expected.toChilled = 100
+      expected.toBosses = 10
+    }
+    expect(result.afterScore).toBeCloseTo(formula(expected), 8)
+  })
+
+  it('keeps equal-grade elemental allocation independent of inventory order', async () => {
+    const skill = Array.from({ length: 20 }, () => mk('I', 'legend', 'skillDamage'))
+    const chilled = Array.from({ length: 12 }, () => mk('I', 'legend', 'toChilled'))
+    const poisoned = Array.from({ length: 4 }, () => mk('I', 'legend', 'toPoisoned'))
+    const inventory = [...skill, ...poisoned, ...chilled]
+    for (const order of [inventory, [...skill, ...chilled, ...poisoned]]) {
+      const result = await solveAll(order, zeroStats(), [
+        equippedScooter,
+        { mountKey: 'doomsteed', mountLevel: 4, isEquipped: false },
+      ])
+      const byId = new Map(inventory.map((p) => [p.id, p]))
+      const equippedPieces = result.boards[0].placements.map((p) => byId.get(p.pieceId)!)
+      expect(equippedPieces.filter((p) => p.stat === 'toChilled')).toHaveLength(9)
+      expect(equippedPieces.filter((p) => p.stat === 'toPoisoned')).toHaveLength(0)
+    }
+  })
+
+  it('keeps the original elemental preference when earlier boards change the leading stat', async () => {
+    const realSolve = solveModule.solve
+    const startingStats = { ...zeroStats(), toPoisoned: 100, toChilled: 90 }
+    const calls: { chilled: number; poisoned: number; priority: readonly string[] | undefined }[] = []
+    vi.spyOn(solveModule, 'solve').mockImplementation((inv, stats, opts) => {
+      calls.push({ chilled: stats.toChilled, poisoned: stats.toPoisoned, priority: opts?.debuffPriority })
+      return realSolve(inv, stats, opts)
+    })
+    await solveAll(Array.from({ length: 30 }, () => mk('I', 'legend', 'skillDamage')), startingStats, [
+      { mountKey: 'netherflameStalker', mountLevel: 4, isEquipped: true },
+      { mountKey: 'doomsteed', mountLevel: 0, isEquipped: false },
+    ])
+    expect(calls).toHaveLength(2)
+    expect(calls[1].chilled).toBeGreaterThan(calls[1].poisoned)
+    expect(calls.map((c) => c.priority)).toEqual([
+      ['toPoisoned', 'toChilled', 'toWeakened'],
+      ['toPoisoned', 'toChilled', 'toWeakened'],
+    ])
+  })
+
+  it('fills all five boards and applies Ruin sync without line bonuses', async () => {
+    const inventory = Array.from({ length: 104 }, () => mk('I', 'legend', 'skillDamage'))
+    const result = await solveAll(inventory, zeroStats(), [
+      { mountKey: 'netherflameStalker', mountLevel: 4, isEquipped: true },
+      { mountKey: 'techHoverboard', mountLevel: 7, isEquipped: false },
+      { mountKey: 'doomsteed', mountLevel: 1, isEquipped: false },
+      { mountKey: 'ruinWarskitter', mountLevel: 0, isEquipped: false },
+      { mountKey: 'electricScooter', mountLevel: 5, isEquipped: false },
+    ])
+    expect(result.boards).toHaveLength(5)
+    expect(result.boards.flatMap((b) => b.placements)).toHaveLength(104)
+    expect(result.unusedPieceIds).toEqual([])
+    const ruin = result.boards.find((b) => b.mountKey === 'ruinWarskitter')!
+    expect(ruin.placements).toHaveLength(24)
+    expect(ruin.syncRate).toBe(40)
+    expect(ruin.buffsFromPieces.skillDamage).toBe(24 * 42)
+    expect(ruin.buffsFromLines).toEqual(zeroStats())
+  })
+
+  it('includes the known Shield, Chilled and Boss bonuses when Ruinous is equipped', async () => {
+    const inventory = Array.from({ length: 24 }, () => mk('I', 'good', 'skillDamage'))
+    const result = await solveAll(inventory, zeroStats(), [
+      { mountKey: 'ruinWarskitter', mountLevel: 8, isEquipped: true },
+    ])
+    expect(result.boards[0].linesFilled).toBe(8)
+    expect(result.boards[0].syncRate).toBe(100)
+    expect(result.boards[0].buffsFromLines).toEqual({ ...zeroStats(), shieldDamage: 140, toChilled: 100, toBosses: 40, vulnerability: 230 })
+    expect(result.afterScore).toBeCloseTo(75.3984, 10)
+  })
+
+  it('carries existing and equipped Vulnerability into subsequent synced boards', async () => {
+    const realSolve = solveModule.solve
+    const seen: (number | undefined)[] = []
+    vi.spyOn(solveModule, 'solve').mockImplementation((inventory, stats, opts) => {
+      seen.push(stats.vulnerability)
+      return realSolve(inventory, stats, opts)
+    })
+    const result = await solveAll(
+      Array.from({ length: 30 }, () => mk('I', 'good', 'skillDamage')),
+      { ...zeroStats(), vulnerability: 90 },
+      [
+        { mountKey: 'ruinWarskitter', mountLevel: 0, isEquipped: true },
+        { mountKey: 'electricScooter', mountLevel: 8, isEquipped: false },
+      ],
+    )
+    expect(seen).toEqual([90, 220])
+    expect(result.beforeScore).toBeCloseTo(1.9, 10)
+    expect(result.afterScore).toBeCloseTo(24.2144, 10)
+    expect(result.boards[1].buffsFromLines.vulnerability).toBe(0)
+  })
+
+  it('does not grant Ruinous base or line Vulnerability when it is synced', async () => {
+    const result = await solveAll(
+      Array.from({ length: 30 }, () => mk('I', 'good', 'skillDamage')),
+      { ...zeroStats(), vulnerability: 90 },
+      [
+        { mountKey: 'netherflameStalker', mountLevel: 0, isEquipped: true },
+        { mountKey: 'ruinWarskitter', mountLevel: 0, isEquipped: false },
+      ],
+    )
+    expect(result.boards[1].buffsFromLines).toEqual(zeroStats())
+    expect(result.afterScore).toBeCloseTo(19.3952, 10)
+  })
   it('matches single-mount solve when only the equipped mount is provided', async () => {
     const inventory: Piece[] = [
       mk('O', 'legend', 'critDamage'),

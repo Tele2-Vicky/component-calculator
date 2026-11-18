@@ -1,7 +1,7 @@
 import { BUFF_TABLE } from '../data/buffTable'
 import type { LineBonusTier, MountLevel } from '../data/lineBonuses'
 import { SHAPE_KEYS } from '../data/shapes'
-import { DEBUFF_PRIORITY, debuffRank } from '../data/stats'
+import { DEBUFF_PRIORITY, debuffPriorityFor, debuffRank, prefersDebuffs } from '../data/stats'
 import type {
   Piece,
   QualityTier,
@@ -9,7 +9,7 @@ import type {
   StatKey,
   StatTotals,
 } from '../data/types'
-import { applyLineBonuses, cloneStats, formula } from './scoring'
+import { applyLineBonuses, cloneStats, formula, scoreLayout } from './scoring'
 import type { ShapeCounts } from './tiling'
 
 interface Bucket {
@@ -38,11 +38,14 @@ export interface SelectionOptions {
   seed?: SelectionResult
   /** Stop the DFS after this many nodes and return the best found so far. */
   nodeBudget?: number
+  /** Starting-stat order shared across a multi-board run. */
+  debuffPriority?: readonly StatKey[]
 }
 
 export interface SelectionResult {
   picks: Piece[]
   score: number
+  complete?: boolean
 }
 
 /**
@@ -57,16 +60,9 @@ export interface SelectionResult {
  * for every shape — otherwise no feasible selection exists and the result
  * falls back to the no-pieces baseline.
  *
- * NOTE: this routine treats the line bonus as a static increment applied
- * once up-front. That holds for tiers with fixed `bonus` values; for tiers
- * with a `compute` callback (e.g. Doomsteed's 8-line toBosses-from-toPoisoned),
- * the bonus is sampled with the *baseline* stats (currentStats + earlier
- * static tiers) — i.e. before piece buffs are added. So the optimizer's
- * objective slightly under-estimates the contribution of a piece that pushes
- * toPoisoned past the next 160% threshold. The optimizer's selected layout
- * is still scored end-to-end via `scoreLayout`, which evaluates `compute`
- * against the final stats, so the displayed score is correct; only the
- * selection objective is approximate.
+ * Dynamic tiers are evaluated after piece buffs, including in the upper
+ * bound. Node-limited callers receive the best feasible selection found and
+ * complete=false, rather than an assertion of optimality.
  */
 export function selectPieces(
   inventory: Piece[],
@@ -78,9 +74,15 @@ export function selectPieces(
   pieceBuffMultiplier = 1,
   opts: SelectionOptions = {},
 ): SelectionResult {
+  const debuffPriority = opts.debuffPriority ?? debuffPriorityFor(currentStats)
   const baseStats = cloneStats(currentStats)
-  applyLineBonuses(baseStats, lineCount, tiers, mountLevel)
-  const baseScore = formula(baseStats)
+  function finalStats(stats: StatTotals): StatTotals {
+    const out = cloneStats(stats)
+    applyLineBonuses(out, lineCount, tiers, mountLevel)
+    return out
+  }
+  const baseScore = formula(finalStats(baseStats))
+  const dynamic = tiers.some((t) => t.compute && t.minLines <= lineCount && t.unlockedAtLevel <= mountLevel)
 
   const groups = new Map<string, Bucket>()
   for (const p of inventory) {
@@ -111,17 +113,17 @@ export function selectPieces(
   function marginalAtBase(b: Bucket): number {
     const s = cloneStats(baseStats)
     s[b.stat] += b.buff
-    return formula(s) - baseScore
+    return formula(finalStats(s)) - baseScore
   }
   const marginals = new Map(buckets.map((b) => [b, marginalAtBase(b)]))
   buckets.sort((a, b) => {
     const ma = marginals.get(a)!
     const mb = marginals.get(b)!
     if (!isTie(ma, mb)) return mb - ma
-    // Ties: debuff priority (chilled > poisoned > weakened), then a fixed
-    // total order so the DFS visits buckets identically for any inventory order.
+    // Ties: strongest starting element first, then a fixed total order so
+    // the DFS visits buckets identically for any inventory order.
     return (
-      debuffRank(a.stat) - debuffRank(b.stat) ||
+      debuffRank(a.stat, debuffPriority) - debuffRank(b.stat, debuffPriority) ||
       (a.stat < b.stat ? -1 : a.stat > b.stat ? 1 : 0) ||
       (a.quality < b.quality ? -1 : a.quality > b.quality ? 1 : 0) ||
       SHAPE_KEYS.indexOf(a.shape) - SHAPE_KEYS.indexOf(b.shape)
@@ -133,22 +135,24 @@ export function selectPieces(
   const pickCounts: number[] = new Array(buckets.length).fill(0)
   let bestScore = baseScore
   let bestPickCounts: number[] = pickCounts.slice()
-  let bestDebuffs = debuffVector(baseStats)
+  let bestDebuffs = finalStats(baseStats)
 
-  /** Debuff totals in priority order; compared lexicographically on ties. */
-  function debuffVector(st: StatTotals): number[] {
-    return DEBUFF_PRIORITY.map((k) => st[k])
-  }
-
-  /** True if `a` favors higher-priority debuffs than `b` (more chilled first). */
-  function prefersDebuffs(a: number[], b: number[]): boolean {
-    for (let i = 0; i < a.length; i++) {
-      if (!isTie(a[i], b[i])) return a[i] > b[i]
+  /** Preference only substitutes elemental pieces of the same shape and grade. */
+  function sameElementalGrades(a: number[], b: number[]): boolean {
+    const balances = new Map<string, number>()
+    for (let i = 0; i < buckets.length; i++) {
+      const delta = a[i] - b[i]
+      if (delta === 0) continue
+      const bucket = buckets[i]
+      if (!DEBUFF_PRIORITY.includes(bucket.stat)) return false
+      const key = `${bucket.shape}|${bucket.quality}`
+      balances.set(key, (balances.get(key) ?? 0) + delta)
     }
-    return false
+    return [...balances.values()].every((delta) => delta === 0)
   }
   const nodeBudget = opts.nodeBudget ?? Infinity
   let nodes = 0
+  let complete = true
   if (opts.seed) {
     const bucketIdx = new Map(
       buckets.map((b, i) => [`${b.shape}|${b.stat}|${b.quality}`, i]),
@@ -158,12 +162,12 @@ export function selectPieces(
       seeded[bucketIdx.get(`${p.shape}|${p.stat}|${p.quality}`)!]++
     }
     bestPickCounts = seeded
-    bestScore = opts.seed.score
+    bestScore = scoreLayout(currentStats, opts.seed.picks, lineCount, tiers, mountLevel, pieceBuffMultiplier)
     const seedStats = cloneStats(baseStats)
     for (const p of opts.seed.picks) {
       seedStats[p.stat] += BUFF_TABLE[p.quality][p.stat] * pieceBuffMultiplier
     }
-    bestDebuffs = debuffVector(seedStats)
+    bestDebuffs = finalStats(seedStats)
   }
 
   function totalSlotsLeft(): number {
@@ -183,7 +187,19 @@ export function selectPieces(
    * selection's score / formula(accumStats).
    */
   function upperBound(idx: number): number {
-    const currScore = formula(accumStats)
+    if (dynamic) {
+      // Relax competition for slots: every remaining bucket may use every
+      // still-open slot of its shape. All stats and dynamic tiers are
+      // monotone, so this can only overestimate any feasible completion.
+      const optimistic = cloneStats(accumStats)
+      for (let i = idx; i < buckets.length; i++) {
+        const b = buckets[i]
+        optimistic[b.stat] += b.buff * Math.min(b.pieces.length, slotsLeft[b.shape])
+      }
+      return formula(finalStats(optimistic)) * (1 + 1e-12)
+    }
+    const scoredStats = finalStats(accumStats)
+    const currScore = formula(scoredStats)
     const ratiosByShape: Record<ShapeKey, number[]> = {
       O: [],
       I: [],
@@ -195,7 +211,7 @@ export function selectPieces(
       const b = buckets[i]
       const cap = Math.min(b.pieces.length, slotsLeft[b.shape])
       if (cap === 0) continue
-      const s = cloneStats(accumStats)
+      const s = cloneStats(scoredStats)
       s[b.stat] += b.buff
       const r = formula(s) / currScore
       const list = ratiosByShape[b.shape]
@@ -209,22 +225,25 @@ export function selectPieces(
       const k = Math.min(slotsLeft[shape], ratios.length)
       for (let j = 0; j < k; j++) bound *= ratios[j]
     }
-    return bound
+    return bound * (1 + 1e-12)
   }
 
   function dfs(idx: number): void {
-    if (++nodes > nodeBudget) return
+    if (++nodes > nodeBudget) {
+      complete = false
+      return
+    }
     if (totalSlotsLeft() === 0) {
-      const score = formula(accumStats)
+      const final = finalStats(accumStats)
+      const score = formula(final)
       if (!isTie(score, bestScore) && score > bestScore) {
         bestScore = score
         bestPickCounts = pickCounts.slice()
-        bestDebuffs = debuffVector(accumStats)
+        bestDebuffs = final
       } else if (isTie(score, bestScore)) {
-        const dv = debuffVector(accumStats)
-        if (prefersDebuffs(dv, bestDebuffs)) {
+        if (sameElementalGrades(pickCounts, bestPickCounts) && prefersDebuffs(final, bestDebuffs, debuffPriority)) {
           bestPickCounts = pickCounts.slice()
-          bestDebuffs = dv
+          bestDebuffs = final
           bestScore = Math.max(bestScore, score)
         }
       }
@@ -257,5 +276,5 @@ export function selectPieces(
     const c = bestPickCounts[i]
     for (let j = 0; j < c; j++) picks.push(buckets[i].pieces[j])
   }
-  return { picks, score: bestScore }
+  return { picks, score: bestScore, complete }
 }

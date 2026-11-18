@@ -1,7 +1,7 @@
 import { recognize } from 'tesseract.js'
-import type { StatKey, StatTotals } from '../data/types'
+import type { ScoreStatKey, StatTotals } from '../data/types'
 
-const TARGETS: { key: StatKey; aliases: string[] }[] = [
+const TARGETS: { key: ScoreStatKey; aliases: string[] }[] = [
   { key: 'critDamage', aliases: ['crit damage'] },
   { key: 'skillDamage', aliases: ['skill damage', 'skil damage'] },
   { key: 'shieldDamage', aliases: ['shield damage', 'shiled damage'] },
@@ -10,6 +10,7 @@ const TARGETS: { key: StatKey; aliases: string[] }[] = [
   { key: 'toChilled', aliases: ['to chilled', 'damage to chilled'] },
   { key: 'laceration', aliases: ['laceration'] },
   { key: 'toBosses', aliases: ['damage to bosses', 'damage to boss', 'to bosses'] },
+  { key: 'vulnerability', aliases: ['vulnerability'] },
 ]
 
 function normalizeLine(text: string): string {
