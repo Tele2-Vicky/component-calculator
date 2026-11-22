@@ -88,9 +88,9 @@ const DOOMSTEED_TIERS: LineBonusTier[] = [
 ]
 
 // Sync-rate percentages indexed by MountLevel 0..8 (0 stars, then 1..4 yellow,
-// then 1..4 red). Source: in-game mount data.
-const ELECTRIC_SCOOTER_SYNC_RATES: number[] = [20, 32, 35, 40, 45, 52, 60, 70, 80]
-const TECH_HOVERBOARD_SYNC_RATES: number[] = [30, 48, 52, 57, 62, 69, 75, 82, 100]
+// then 1..4 red). Verified against Expo's calculator on 2026-11-22.
+const ELECTRIC_SCOOTER_SYNC_RATES: number[] = [30, 32, 35, 40, 45, 52, 60, 70, 80]
+const TECH_HOVERBOARD_SYNC_RATES: number[] = [45, 48, 52, 57, 62, 69, 75, 82, 100]
 // Expo's calculator uses this table for all three Legendary mounts (2026-11-21).
 const LEGENDARY_SYNC_RATES: number[] = [60, 65, 75, 92, 112, 132, 152, 175, 200]
 

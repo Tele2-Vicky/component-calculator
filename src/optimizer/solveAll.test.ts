@@ -231,7 +231,7 @@ describe('solveAll', () => {
   })
 
   it('orders non-equipped boards by descending sync rate', async () => {
-    // Equipped scooter comes first, followed by Doomsteed (60%) and Hoverboard (30%).
+    // Equipped scooter comes first, followed by Doomsteed (60%) and Hoverboard (45%).
     const inventory: Piece[] = []
     for (let i = 0; i < 60; i++) inventory.push(mk('O', 'legend', 'critDamage'))
     const result = await solveAll(
@@ -252,7 +252,7 @@ describe('solveAll', () => {
   it('non-equipped board piece buffs are unscaled in BoardResult.buffsFromPieces', async () => {
     // Use a small inventory that fits on both boards combined and force the
     // first piece to land on the equipped doomsteed (12-wide). The leftover
-    // ends up on the scooter at 20% sync. BoardResult.buffsFromPieces is the
+    // ends up on the scooter at 30% sync. BoardResult.buffsFromPieces is the
     // FULL value; the "scaled" view is reconstructed at display time.
     const inventory: Piece[] = []
     for (let i = 0; i < 50; i++) inventory.push(mk('O', 'legend', 'critDamage'))

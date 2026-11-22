@@ -6,9 +6,9 @@ import { applyLineBonuses } from '../optimizer/scoring'
 import type { MountLevel } from './lineBonuses'
 
 it.each([
-  ['electricScooter', [20, 32, 35, 40, 45, 52, 60, 70, 80]],
-  ['techHoverboard', [30, 48, 52, 57, 62, 69, 75, 82, 100]],
-] as const)('uses the supplied sync rates at each star level for %s', (key, expected) => {
+  ['electricScooter', [30, 32, 35, 40, 45, 52, 60, 70, 80]],
+  ['techHoverboard', [45, 48, 52, 57, 62, 69, 75, 82, 100]],
+] as const)('uses Expo’s sync rates at each star level for %s', (key, expected) => {
   expect(MOUNTS[key].syncRates).toEqual(expected)
 })
 
